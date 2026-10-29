@@ -1,5 +1,5 @@
 // Security Motion Capture PWA Service Worker
-const CACHE_NAME = 'security-cam-pwa-v1.11';
+const CACHE_NAME = 'security-cam-pwa-v1.13';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -51,6 +51,32 @@ self.addEventListener('fetch', (event) => {
   // API responses are live state, not offline application assets.
   if (new URL(event.request.url).pathname.startsWith('/api/')) return;
 
+  // Serve cached app pages immediately so a sleeping laptop or unavailable
+  // network never blocks an installed PWA from opening.
+  if (event.request.mode === 'navigate') {
+    event.respondWith((async () => {
+      const cachedPage = await caches.match(event.request)
+        || await caches.match('./index.html')
+        || await caches.match('./');
+      if (cachedPage) return cachedPage;
+
+      try {
+        const networkResponse = await fetch(event.request);
+        if (networkResponse && networkResponse.status === 200) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, networkResponse.clone());
+        }
+        return networkResponse;
+      } catch (err) {
+        return new Response(
+          '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Offline setup needed</title><main style="font:16px system-ui;max-width:34rem;margin:15vh auto;padding:1.5rem;color:#f3f4f6;background:#111827"><h1>Offline copy not ready</h1><p>Connect to the PWA once while the laptop server is running so the app can cache its files. Then reopen it from the Home Screen offline.</p></main>',
+          { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+        );
+      }
+    })());
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
@@ -79,12 +105,7 @@ self.addEventListener('fetch', (event) => {
         });
 
         return networkResponse;
-      }).catch(() => {
-        // Fallback for navigation requests
-        if (event.request.mode === 'navigate') {
-          return caches.match('./index.html').then((matched) => matched || caches.match('./'));
-        }
-      });
+      }).catch(() => undefined);
     })
   );
 });

@@ -31,6 +31,8 @@ Use **View / Copy Debug Log** to copy the current or most recent session log. On
 
 ## Run locally over HTTPS
 
+For offline use, first open the app in Safari while the laptop server is running and wait until the iPhone install banner says **Offline-ready**. Then add it to the Home Screen. Once its files are cached, the installed app opens from its local cache without Wi-Fi or `start_server.bat`; network access is only needed for app updates and PC syncing.
+
 Camera and microphone access require a secure context. From this folder, run:
 
 ```powershell

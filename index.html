@@ -48,6 +48,7 @@
     <section id="iosInstallStrip" class="ios-install-strip hidden">
       <div class="ios-install-text">
         📲 <strong>Install App on iPhone:</strong> Tap Safari's <strong>Share</strong> button (<strong>⎋</strong>) below &rarr; tap <strong>"Add to Home Screen"</strong> (<strong>➕</strong>).
+        <div id="offlineReadiness" class="offline-readiness">Preparing offline files. Keep this page open while connected; wait for Offline-ready before installing.</div>
       </div>
       <button id="showInstallGuideBtn" type="button" class="btn-open-guide">How-To</button>
     </section>
@@ -208,7 +209,7 @@
       </div>
       <div class="modal-body" style="font-size:0.85rem; line-height:1.5; color:var(--text-main);">
         <p style="margin-bottom:12px; color:var(--text-muted);">
-          Apple Safari requires installing apps through the Share menu:
+          First, open the app while connected to the laptop server and wait for the banner to say <strong>Offline-ready</strong>. That caches the app so it can open later without the server or network. Then install it through Safari's Share menu:
         </p>
         <div style="background:rgba(255,255,255,0.04); border:1px solid var(--border-color); border-radius:10px; padding:12px; margin-bottom:10px;">
           <strong style="color:var(--accent-cyan);">Step 1:</strong>
@@ -257,7 +258,7 @@
   </div>
 
   <!-- Revision timestamps use Mountain Standard Time (UTC-07:00). -->
-  <footer class="app-footer">Revision Date: 2026-10-29_15-33-36</footer>
+  <footer class="app-footer">Revision Date: 2026-10-29_16-02-15</footer>
 
   <script src="app.js"></script>
 </body>

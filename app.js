@@ -69,6 +69,7 @@
 
   // iOS Install & Toast Elements
   const iosInstallStrip = document.getElementById('iosInstallStrip');
+  const offlineReadiness = document.getElementById('offlineReadiness');
   const showInstallGuideBtn = document.getElementById('showInstallGuideBtn');
   const installGuideModal = document.getElementById('installGuideModal');
   const closeInstallGuideBtn = document.getElementById('closeInstallGuideBtn');
@@ -1700,11 +1701,27 @@
 
   // --- 12. Service Worker Registration ---
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js')
-        .then(reg => console.log('[PWA] Service Worker registered:', reg.scope))
-        .catch(err => console.warn('[PWA] Service Worker registration failed:', err));
+    window.addEventListener('load', async () => {
+      if (offlineReadiness) offlineReadiness.textContent = 'Preparing offline files. Keep this page open while connected.';
+      try {
+        const registration = await navigator.serviceWorker.register('./sw.js');
+        console.log('[PWA] Service Worker registered:', registration.scope);
+        await navigator.serviceWorker.ready;
+        if (offlineReadiness) {
+          offlineReadiness.textContent = 'Offline-ready. The Home Screen app can open without the laptop server; a connection is needed for updates and PC sync.';
+          offlineReadiness.classList.add('ready');
+        }
+      } catch (err) {
+        console.warn('[PWA] Service Worker registration failed:', err);
+        if (offlineReadiness) {
+          offlineReadiness.textContent = `Offline setup failed: ${err.message}. Keep the server running and reload this page.`;
+          offlineReadiness.classList.add('error');
+        }
+      }
     });
+  } else if (offlineReadiness) {
+    offlineReadiness.textContent = 'This browser does not support offline app installation.';
+    offlineReadiness.classList.add('error');
   }
 
   // Initial load

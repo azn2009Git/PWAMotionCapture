@@ -491,6 +491,20 @@ body {
   color: var(--accent-cyan);
 }
 
+.offline-readiness {
+  margin-top: 7px;
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+.offline-readiness.ready {
+  color: var(--accent-emerald);
+}
+
+.offline-readiness.error {
+  color: var(--accent-rose);
+}
+
 .btn-open-guide {
   background: rgba(0, 229, 255, 0.15);
   border: 1px solid rgba(0, 229, 255, 0.4);
