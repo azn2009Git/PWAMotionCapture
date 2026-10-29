@@ -64,6 +64,17 @@ body {
   gap: 16px;
 }
 
+.app-footer {
+  max-width: 720px;
+  margin: 18px auto 0;
+  padding: 12px 0 calc(8px + var(--safe-bottom));
+  border-top: 1px solid var(--border-color);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-align: center;
+}
+
 /* Header */
 .app-header {
   display: flex;

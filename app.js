@@ -51,6 +51,7 @@
   // Platform & Server
   let isWindows = false;
   let isIOS = false;
+  let isMobileCameraDevice = false;
   let isLocalServerAvailable = false;
   let abyssDirHandle = null;
   let totalCapturesCount = 0;
@@ -131,10 +132,13 @@
   function showCaptureToast(blob, filename) {
     if (!captureToast) return;
     toastTitle.textContent = 'Capture Complete!';
-    toastSubtitle.textContent = `${(blob.size / 1024 / 1024).toFixed(1)} MB • Tap Save Video to choose a destination`;
+    const saveHint = destinationSelect.value === 'googledrive'
+      ? 'Tap Save Video, then choose Google Drive and MyCaptures (create it if needed)'
+      : 'Tap Save Video to choose a destination';
+    toastSubtitle.textContent = `${(blob.size / 1024 / 1024).toFixed(1)} MB • ${saveHint}`;
 
     toastActionBtn.onclick = () => {
-      triggerIOSShare(blob, filename);
+      triggerSystemShare(blob, filename);
       captureToast.classList.remove('show');
     };
 
@@ -321,6 +325,7 @@
 
     isIOS = /iPad|iPhone|iPod/.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     isWindows = /Win/.test(platform) || /Windows/.test(ua);
+    isMobileCameraDevice = isIOS || /Android/i.test(ua);
 
     const isStandalone = ('standalone' in window.navigator && window.navigator.standalone) ||
                          window.matchMedia('(display-mode: standalone)').matches;
@@ -338,6 +343,7 @@
       destinationSelect.value = 'cameraroll';
       storageRouteBadge.textContent = 'Default: Camera Roll';
       destinationSelect.querySelector('option[value="windows"]').hidden = true;
+      destinationSelect.querySelector('option[value="googledrive"]').hidden = false;
     } else if (isWindows) {
       platformBadge.className = 'pill-badge active';
       platformText.textContent = 'Windows PC';
@@ -345,12 +351,14 @@
       storageRouteBadge.textContent = 'C:\\Abyss\\PWA_Captures';
       destinationSelect.querySelector('option[value="cameraroll"]').hidden = true;
       destinationSelect.querySelector('option[value="onedrive"]').hidden = true;
+      destinationSelect.querySelector('option[value="googledrive"]').hidden = true;
     } else {
       platformBadge.className = 'pill-badge';
       platformText.textContent = 'Web Browser';
       destinationSelect.querySelector('option[value="windows"]').hidden = true;
       destinationSelect.querySelector('option[value="cameraroll"]').textContent = 'Device Photos / Share Sheet';
       destinationSelect.querySelector('option[value="onedrive"]').textContent = 'OneDrive / Files';
+      destinationSelect.querySelector('option[value="googledrive"]').hidden = false;
     }
 
     // Check if running on local server with direct Abyss API
@@ -482,6 +490,22 @@
 
   // --- 4. Camera & Audio Stream Management ---
   async function enumerateCameras() {
+    if (isMobileCameraDevice) {
+      cameraSelect.innerHTML = '';
+      [
+        { value: 'facing:environment', label: 'Rear Camera' },
+        { value: 'facing:user', label: 'Front Camera' }
+      ].forEach(camera => {
+        const option = document.createElement('option');
+        option.value = camera.value;
+        option.textContent = camera.label;
+        cameraSelect.appendChild(option);
+      });
+      cameraSelect.value = 'facing:environment';
+      selectedDeviceId = cameraSelect.value;
+      return;
+    }
+
     try {
       // Trigger initial permission request to get device labels
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -544,28 +568,39 @@
       frameRate: { ideal: 30 }
     };
 
-    if (deviceId) {
+    const requestedFacing = (deviceId || '').startsWith('facing:') ? deviceId.slice('facing:'.length) : '';
+    if (requestedFacing) {
+      videoConstraints.facingMode = { exact: requestedFacing };
+    } else if (deviceId) {
       videoConstraints.deviceId = { exact: deviceId };
     } else {
       videoConstraints.facingMode = { ideal: 'environment' };
     }
 
     try {
-      currentCameraStream = await navigator.mediaDevices.getUserMedia({
+      const mediaConstraints = {
         video: videoConstraints,
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: true
         }
-      });
+      };
+      try {
+        currentCameraStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      } catch (firstError) {
+        if (!requestedFacing) throw firstError;
+        appendLog(`Exact ${requestedFacing} camera request unavailable; retrying with preferred facing mode.`, 'WARN');
+        videoConstraints.facingMode = { ideal: requestedFacing };
+        currentCameraStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      }
 
       cameraViewfinder.srcObject = currentCameraStream;
 
       // Check if front camera to mirror preview
       const activeTrack = currentCameraStream.getVideoTracks()[0];
       const settings = activeTrack.getSettings ? activeTrack.getSettings() : {};
-      if (settings.facingMode === 'user' || /front/i.test(activeTrack.label)) {
+      if (settings.facingMode === 'user' || /front/i.test(activeTrack.label) || requestedFacing === 'user') {
         cameraViewfinder.classList.add('mirrored');
       } else {
         cameraViewfinder.classList.remove('mirrored');
@@ -581,26 +616,28 @@
       // Once permission is granted, browsers reveal camera names such as
       // "Front Camera" and "Back Camera". Refresh the chooser labels without
       // changing the camera the user just selected.
-      try {
-        const selectedId = selectedDeviceId || settings.deviceId || '';
-        availableCameras = (await navigator.mediaDevices.enumerateDevices())
-          .filter(device => device.kind === 'videoinput');
-        cameraSelect.innerHTML = '';
-        availableCameras.forEach((cam, idx) => {
-          const opt = document.createElement('option');
-          opt.value = cam.deviceId;
-          const label = cam.label || `Camera ${idx + 1}`;
-          opt.textContent = /front|user|facing front/i.test(label)
-            ? `Front Camera (${label})`
-            : /back|rear|environment|facing back/i.test(label)
-              ? `Rear Camera (${label})`
-              : label;
-          cameraSelect.appendChild(opt);
-        });
-        if (selectedId) selectedDeviceId = selectedId;
-        cameraSelect.value = selectedId;
-      } catch (enumerateError) {
-        // Camera access remains usable even if the browser hides device labels.
+      if (!isMobileCameraDevice) {
+        try {
+          const selectedId = selectedDeviceId || settings.deviceId || '';
+          availableCameras = (await navigator.mediaDevices.enumerateDevices())
+            .filter(device => device.kind === 'videoinput');
+          cameraSelect.innerHTML = '';
+          availableCameras.forEach((cam, idx) => {
+            const opt = document.createElement('option');
+            opt.value = cam.deviceId;
+            const label = cam.label || `Camera ${idx + 1}`;
+            opt.textContent = /front|user|facing front/i.test(label)
+              ? `Front Camera (${label})`
+              : /back|rear|environment|facing back/i.test(label)
+                ? `Rear Camera (${label})`
+                : label;
+            cameraSelect.appendChild(opt);
+          });
+          if (selectedId) selectedDeviceId = selectedId;
+          cameraSelect.value = selectedId;
+        } catch (enumerateError) {
+          // Camera access remains usable even if the browser hides device labels.
+        }
       }
 
       appendLog(`Stream initialized: ${activeTrack.label} (${settings.width || 1280}x${settings.height || 720})`);
@@ -613,7 +650,11 @@
   cameraSelect.addEventListener('change', async () => {
     selectedDeviceId = cameraSelect.value;
     appendLog(`User changed camera selection to: ${selectedDeviceId}`);
-    await startCameraStream(selectedDeviceId);
+    try {
+      await startCameraStream(selectedDeviceId);
+    } catch (err) {
+      alert(`Could not switch camera: ${err.message}`);
+    }
   });
 
   // --- 5. Motion Detection Algorithm (Visual Frame Differencing) ---
@@ -1021,16 +1062,20 @@
   }
 
   // Trigger native share on iOS from direct user interaction
-  async function triggerIOSShare(blob, filename) {
+  async function triggerSystemShare(blob, filename) {
     const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
-    const isOneDrive = destinationSelect.value === 'onedrive';
+    const shareText = destinationSelect.value === 'googledrive'
+      ? 'Save security capture to Google Drive, then choose or create MyCaptures'
+      : destinationSelect.value === 'onedrive'
+        ? 'Save security capture to OneDrive'
+        : 'Save security capture to Camera Roll';
 
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         appendLog(`[Share] Opening the system share sheet for: ${filename}`);
         await navigator.share({
           title: filename,
-          text: isOneDrive ? 'Save security capture to OneDrive' : 'Save security capture to Camera Roll',
+          text: shareText,
           files: [file]
         });
         appendLog(`[SUCCESS] Shared ${filename} via the system share sheet`);
@@ -1092,8 +1137,8 @@
       return;
     }
 
-    // 2. iPhone (Camera Roll or OneDrive)
-    if (isIOS || dest === 'cameraroll' || dest === 'onedrive') {
+    // 2. Mobile share targets (Photos, OneDrive, Google Drive)
+    if (isIOS || dest === 'cameraroll' || dest === 'onedrive' || dest === 'googledrive') {
       appendLog(`[Capture] Stored in the app gallery: ${filename} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
       // Show floating notification toast with direct tap action (no browser download popup!)
       showCaptureToast(blob, filename);
@@ -1154,9 +1199,10 @@
     saveShareBtn.className = 'btn-small-share';
     saveShareBtn.textContent = isWindows
       ? 'Save Video'
-      : destinationSelect.value === 'onedrive' ? 'OneDrive' : 'Camera Roll';
+      : destinationSelect.value === 'onedrive' ? 'OneDrive'
+        : destinationSelect.value === 'googledrive' ? 'Google Drive' : 'Camera Roll';
     saveShareBtn.onclick = () => {
-      triggerIOSShare(blob, filename);
+      triggerSystemShare(blob, filename);
     };
 
     const playBtn = document.createElement('a');
@@ -1395,6 +1441,8 @@
       }
       if (destinationSelect.value === 'onedrive') {
         storageRouteBadge.textContent = 'Share Sheet: OneDrive';
+      } else if (destinationSelect.value === 'googledrive') {
+        storageRouteBadge.textContent = 'Share Sheet: Google Drive';
       } else if (destinationSelect.value === 'cameraroll') {
         storageRouteBadge.textContent = 'Share Sheet: Camera Roll';
       } else {

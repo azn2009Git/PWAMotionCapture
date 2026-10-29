@@ -19,7 +19,9 @@ The local HTTPS server creates `C:\Abyss\PWA_Captures` and `C:\Abyss\PWALogs` an
 
 ### iPhone
 
-The app keeps captures in its in-app gallery and offers a **Save Video** action. Tapping it opens the iOS Share Sheet; choose **Save Video** for Photos or OneDrive to send the clip to OneDrive. The website cannot write directly into Photos or choose a OneDrive folder without the Share Sheet.
+The app keeps captures in its in-app gallery and offers a **Save Video** action. Tapping it opens the iOS Share Sheet; choose Photos, OneDrive, or Google Drive. For Google Drive, choose or create the `MyCaptures` folder in Drive. Automatic folder creation would need Google OAuth and Drive API setup; this app currently uses the iOS Share Sheet instead.
+
+The camera chooser offers explicit **Rear Camera** and **Front Camera** options on iPhone and Android. The app requests the selected facing mode directly, rather than depending on iOS to expose both cameras as separate device IDs.
 
 Use **View / Copy Debug Log** to copy the current or most recent session log. On Windows, the local server writes each session log to `C:\Abyss\PWALogs`.
 
