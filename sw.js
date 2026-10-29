@@ -1,5 +1,5 @@
 // Security Motion Capture PWA Service Worker
-const CACHE_NAME = 'security-cam-pwa-v1.5';
+const CACHE_NAME = 'security-cam-pwa-v1.8';
 
 const ASSETS_TO_CACHE = [
   './',

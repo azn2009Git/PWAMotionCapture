@@ -104,6 +104,7 @@
             <option value="cameraroll">iPhone: Camera Roll (Photos App)</option>
             <option value="onedrive">iPhone: OneDrive / Files App</option>
             <option value="googledrive">iPhone: Google Drive / MyCaptures</option>
+            <option value="pcserver" hidden>Home PC: Auto-save to C:\Abyss\PWA_Captures</option>
             <option value="windows">Windows: C:\Abyss\PWA_Captures</option>
           </select>
           <div id="windowsFolderSetupWrap" style="display:none; margin-top:4px;">
@@ -161,6 +162,7 @@
     <section class="status-strip">
       <div>Active Log: <span id="activeLogLabel" class="status-strip-val">None (Start to initialize)</span></div>
       <div>Captures: <span id="captureCountLabel" class="status-strip-val">0</span></div>
+      <div>PC Sync: <span id="pendingPcSyncLabel" class="status-strip-val">Not selected</span></div>
     </section>
 
     <!-- 5. Captures Gallery / Review -->
@@ -254,7 +256,8 @@
     </button>
   </div>
 
-  <footer class="app-footer">Revision Date: 2026-10-29_21-33-07</footer>
+  <!-- Revision timestamps use Mountain Standard Time (UTC-07:00). -->
+  <footer class="app-footer">Revision Date: 2026-10-29_14-51-59</footer>
 
   <script src="app.js"></script>
 </body>

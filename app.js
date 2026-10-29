@@ -53,6 +53,10 @@
   let isIOS = false;
   let isMobileCameraDevice = false;
   let isLocalServerAvailable = false;
+  let destinationExplicitlyChosen = false;
+  let isSyncingPendingCaptures = false;
+  let isCheckingLocalServer = false;
+  let pendingPcCaptureCount = 0;
   let abyssDirHandle = null;
   let totalCapturesCount = 0;
 
@@ -95,11 +99,13 @@
       return new Promise((resolve) => {
         const tx = db.transaction('captures', 'readwrite');
         tx.objectStore('captures').put(record);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+        tx.onabort = () => resolve(false);
       });
     } catch (e) {
       console.warn('IndexedDB save failed:', e);
+      return false;
     }
   }
 
@@ -117,6 +123,115 @@
     }
   }
 
+  async function getPendingPcCaptures() {
+    const saved = await loadAllCapturesFromDB();
+    return saved.filter(item => item.pcSynced === false);
+  }
+
+  async function setCapturePcSynced(filename) {
+    try {
+      const db = await getDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction('captures', 'readwrite');
+        const store = tx.objectStore('captures');
+        const request = store.get(filename);
+        request.onsuccess = () => {
+          if (request.result) {
+            request.result.pcSynced = true;
+            store.put(request.result);
+          }
+        };
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async function updatePendingPcSyncStatus() {
+    if (!pendingPcSyncLabel) return;
+    const pending = await getPendingPcCaptures();
+    pendingPcCaptureCount = pending.length;
+    if (destinationSelect.value !== 'pcserver' && !pending.length) {
+      pendingPcSyncLabel.textContent = 'Not selected';
+      return;
+    }
+    pendingPcSyncLabel.textContent = pending.length
+      ? `${pending.length} waiting for PC`
+      : destinationSelect.value === 'pcserver'
+        ? isLocalServerAvailable ? 'Up to date' : 'Waiting for PC'
+        : 'Not selected';
+  }
+
+  async function uploadCaptureBlobToPc(filename, blob) {
+    const response = await fetch('/api/save_capture', {
+      method: 'POST',
+      headers: { 'X-Filename': filename, 'Content-Type': blob.type || 'application/octet-stream' },
+      body: blob
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) throw new Error(result.error || `HTTP ${response.status}`);
+    return result;
+  }
+
+  async function syncPendingCapturesToPc() {
+    if (isSyncingPendingCaptures || !isLocalServerAvailable) {
+      await updatePendingPcSyncStatus();
+      return;
+    }
+
+    isSyncingPendingCaptures = true;
+    try {
+      const pending = await getPendingPcCaptures();
+      for (const item of pending) {
+        try {
+          await uploadCaptureBlobToPc(item.filename, item.blob);
+          await setCapturePcSynced(item.filename);
+          appendLog(`[SUCCESS] Synced offline capture to Home PC: ${item.filename}`);
+        } catch (err) {
+          appendLog(`[WARN] Home PC sync is waiting: ${err.message}`, 'WARN');
+          break;
+        }
+      }
+    } finally {
+      isSyncingPendingCaptures = false;
+      await updatePendingPcSyncStatus();
+    }
+  }
+
+  async function refreshLocalServerStatus() {
+    if (isCheckingLocalServer) return;
+    isCheckingLocalServer = true;
+    try {
+      const response = await fetch('/api/status', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data.isLocalServer) throw new Error('Local save server not detected');
+
+      isLocalServerAvailable = true;
+      const pcServerOption = destinationSelect.querySelector('option[value="pcserver"]');
+      if (pcServerOption && !isWindows) {
+        pcServerOption.hidden = false;
+        if (!destinationExplicitlyChosen) {
+          destinationSelect.value = 'pcserver';
+          storageRouteBadge.textContent = 'Auto Save: Home PC';
+          try { localStorage.setItem('securityCamDestination', 'pcserver'); } catch (err) {}
+        }
+      }
+      if (isWindows && destinationSelect.value === 'windows') {
+        storageRouteBadge.textContent = 'Local Server (Direct Abyss Save)';
+        if (windowsFolderSetupWrap) windowsFolderSetupWrap.style.display = 'none';
+      }
+      await syncPendingCapturesToPc();
+    } catch (err) {
+      isLocalServerAvailable = false;
+      await updatePendingPcSyncStatus();
+    } finally {
+      isCheckingLocalServer = false;
+    }
+  }
+
   async function deleteCaptureFromDB(filename) {
     try {
       const db = await getDB();
@@ -129,13 +244,16 @@
     } catch (e) {}
   }
 
-  function showCaptureToast(blob, filename) {
+  function showCaptureToast(blob, filename, allowManualSave = true) {
     if (!captureToast) return;
     toastTitle.textContent = 'Capture Complete!';
-    const saveHint = destinationSelect.value === 'googledrive'
-      ? 'Tap Save Video, then choose Google Drive and MyCaptures (create it if needed)'
-      : 'Tap Save Video to choose a destination';
+    const saveHint = !allowManualSave
+      ? 'Saved offline in the app; will sync to your PC when it reconnects'
+      : destinationSelect.value === 'googledrive'
+        ? 'Tap Save Video, then choose Google Drive and MyCaptures (create it if needed)'
+        : 'Tap Save Video to choose a destination';
     toastSubtitle.textContent = `${(blob.size / 1024 / 1024).toFixed(1)} MB • ${saveHint}`;
+    toastActionBtn.style.display = allowManualSave ? '' : 'none';
 
     toastActionBtn.onclick = () => {
       triggerSystemShare(blob, filename);
@@ -306,6 +424,7 @@
 
   const activeLogLabel = document.getElementById('activeLogLabel');
   const captureCountLabel = document.getElementById('captureCountLabel');
+  const pendingPcSyncLabel = document.getElementById('pendingPcSyncLabel');
   const capturesList = document.getElementById('capturesList');
 
   // Modal elements
@@ -322,6 +441,9 @@
   function detectPlatform() {
     const ua = navigator.userAgent || '';
     const platform = navigator.platform || '';
+    let savedDestination = '';
+    try { savedDestination = localStorage.getItem('securityCamDestination') || ''; } catch (err) {}
+    destinationExplicitlyChosen = Boolean(savedDestination);
 
     isIOS = /iPad|iPhone|iPod/.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     isWindows = /Win/.test(platform) || /Windows/.test(ua);
@@ -340,8 +462,14 @@
         platformText.textContent = 'iPhone (Safari)';
         if (iosInstallStrip) iosInstallStrip.classList.remove('hidden');
       }
-      destinationSelect.value = 'cameraroll';
-      storageRouteBadge.textContent = 'Default: Camera Roll';
+      const validMobileDestinations = ['cameraroll', 'onedrive', 'googledrive', 'pcserver'];
+      destinationSelect.value = validMobileDestinations.includes(savedDestination) ? savedDestination : 'cameraroll';
+      if (destinationSelect.value === 'pcserver') {
+        destinationSelect.querySelector('option[value="pcserver"]').hidden = false;
+      }
+      storageRouteBadge.textContent = destinationSelect.value === 'pcserver'
+        ? 'Auto Save: Home PC'
+        : 'Default: Camera Roll';
       destinationSelect.querySelector('option[value="windows"]').hidden = true;
       destinationSelect.querySelector('option[value="googledrive"]').hidden = false;
     } else if (isWindows) {
@@ -359,27 +487,20 @@
       destinationSelect.querySelector('option[value="cameraroll"]').textContent = 'Device Photos / Share Sheet';
       destinationSelect.querySelector('option[value="onedrive"]').textContent = 'OneDrive / Files';
       destinationSelect.querySelector('option[value="googledrive"]').hidden = false;
+      if (['cameraroll', 'onedrive', 'googledrive', 'pcserver'].includes(savedDestination)) {
+        destinationSelect.value = savedDestination;
+        if (savedDestination === 'pcserver') destinationSelect.querySelector('option[value="pcserver"]').hidden = false;
+      }
     }
 
-    // Check if running on local server with direct Abyss API
-    fetch('/api/status')
-      .then(res => res.json())
-      .then(data => {
-        if (data.isLocalServer) {
-          isLocalServerAvailable = true;
-          if (isWindows && destinationSelect.value === 'windows') {
-            storageRouteBadge.textContent = 'Local Server (Direct Abyss Save)';
-            if (windowsFolderSetupWrap) windowsFolderSetupWrap.style.display = 'none';
-          }
-          console.log('[System] Local Python Abyss API detected and connected.');
-        }
-      })
-      .catch(() => {
-        isLocalServerAvailable = false;
-      });
+    refreshLocalServerStatus();
   }
 
   detectPlatform();
+  window.addEventListener('online', refreshLocalServerStatus);
+  setInterval(() => {
+    if (destinationSelect.value === 'pcserver' || pendingPcCaptureCount > 0) refreshLocalServerStatus();
+  }, 30000);
 
   // Update clock every second
   setInterval(() => {
@@ -450,7 +571,7 @@
     const logText = currentLogEntries.join('\n');
 
     // 1. If local Python server is running on Windows, save directly to C:\Abyss\PWALogs
-    if (isWindows && isLocalServerAvailable) {
+    if ((isWindows || destinationSelect.value === 'pcserver') && isLocalServerAvailable) {
       try {
         const res = await fetch('/api/save_log', {
           method: 'POST',
@@ -1068,7 +1189,9 @@
       ? 'Save security capture to Google Drive, then choose or create MyCaptures'
       : destinationSelect.value === 'onedrive'
         ? 'Save security capture to OneDrive'
-        : 'Save security capture to Camera Roll';
+        : destinationSelect.value === 'cameraroll'
+          ? 'Save security capture to Camera Roll'
+          : 'Save security capture to another location';
 
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
@@ -1097,7 +1220,29 @@
     captureCountLabel.textContent = totalCapturesCount;
 
     // Always add to persistent in-app gallery & IndexedDB
-    await addCaptureToGallery(blob, filename, true);
+    const persistedLocally = await addCaptureToGallery(blob, filename, true, dest !== 'pcserver');
+
+    // The local PC server is the zero-click destination for phones on the
+    // same Wi-Fi network. The server writes the clip straight to C:\Abyss.
+    if (dest === 'pcserver') {
+      if (!persistedLocally) {
+        if (isLocalServerAvailable) {
+          try {
+            const result = await uploadCaptureBlobToPc(filename, blob);
+            appendLog(`[SUCCESS] Auto-saved to Home PC: ${result.path}`);
+            return;
+          } catch (err) {
+            appendLog(`[ERROR] Home PC save failed: ${err.message}`, 'ERROR');
+          }
+        }
+        showCaptureToast(blob, filename, true);
+        return;
+      }
+      await syncPendingCapturesToPc();
+      const stillPending = (await getPendingPcCaptures()).some(item => item.filename === filename);
+      if (stillPending) showCaptureToast(blob, filename, false);
+      return;
+    }
 
     // 1. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
     if (dest === 'windows') {
@@ -1159,14 +1304,17 @@
     }, 1000);
   }
 
-  async function addCaptureToGallery(blob, filename, shouldSaveToDB = true) {
+  async function addCaptureToGallery(blob, filename, shouldSaveToDB = true, pcSynced = true) {
+    let persisted = true;
     if (shouldSaveToDB) {
-      await saveCaptureToDB({
+      persisted = await saveCaptureToDB({
         filename,
         blob,
         size: blob.size,
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        pcSynced
       });
+      if (!persisted) appendLog(`[ERROR] Could not persist capture in app storage: ${filename}`, 'ERROR');
     }
 
     // Clear placeholder message
@@ -1199,7 +1347,8 @@
     saveShareBtn.className = 'btn-small-share';
     saveShareBtn.textContent = isWindows
       ? 'Save Video'
-      : destinationSelect.value === 'onedrive' ? 'OneDrive'
+      : destinationSelect.value === 'pcserver' ? 'Export'
+        : destinationSelect.value === 'onedrive' ? 'OneDrive'
         : destinationSelect.value === 'googledrive' ? 'Google Drive' : 'Camera Roll';
     saveShareBtn.onclick = () => {
       triggerSystemShare(blob, filename);
@@ -1224,6 +1373,7 @@
       if (confirm(`Delete ${filename}?`)) {
         await deleteCaptureFromDB(filename);
         item.remove();
+        updatePendingPcSyncStatus();
         if (capturesList.children.length === 0) {
           capturesList.innerHTML = `<div style="font-size:0.75rem; color:var(--text-dim); text-align:center; padding: 12px;">No security events captured yet.</div>`;
         }
@@ -1238,6 +1388,8 @@
     item.appendChild(actions);
 
     capturesList.prepend(item);
+    updatePendingPcSyncStatus();
+    return persisted;
   }
 
   async function initSavedCaptures() {
@@ -1250,6 +1402,7 @@
       totalCapturesCount = saved.length;
       captureCountLabel.textContent = totalCapturesCount;
     }
+    await updatePendingPcSyncStatus();
   }
 
   // --- 9. Start / Stop Monitoring Handler ---
@@ -1257,6 +1410,14 @@
     if (isMonitoring) return;
     toggleMonitorBtn.disabled = true;
     startNewLogSession();
+    if (navigator.storage?.persist) {
+      try {
+        const persistentStorageGranted = await navigator.storage.persist();
+        appendLog(`Persistent offline storage: ${persistentStorageGranted ? 'granted' : 'not granted by browser'}`);
+      } catch (err) {
+        appendLog(`Could not request persistent offline storage: ${err.message}`, 'WARN');
+      }
+    }
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Camera access is unavailable. Open this app over HTTPS in a supported browser.');
@@ -1445,11 +1606,17 @@
         storageRouteBadge.textContent = 'Share Sheet: Google Drive';
       } else if (destinationSelect.value === 'cameraroll') {
         storageRouteBadge.textContent = 'Share Sheet: Camera Roll';
+      } else if (destinationSelect.value === 'pcserver') {
+        storageRouteBadge.textContent = 'Auto Save: Home PC';
       } else {
         storageRouteBadge.textContent = isLocalServerAvailable
           ? 'Local Server (Direct Abyss Save)'
           : 'C:\\Abyss\\PWA_Captures';
       }
+      destinationExplicitlyChosen = true;
+      try { localStorage.setItem('securityCamDestination', destinationSelect.value); } catch (err) {}
+      updatePendingPcSyncStatus();
+      if (destinationSelect.value === 'pcserver') refreshLocalServerStatus();
     });
   }
 

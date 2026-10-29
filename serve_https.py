@@ -98,17 +98,14 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=DIRECTORY, **kwargs)
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Filename')
+        # The app uses same-origin requests; do not enable cross-origin writes.
+        self.send_response(403)
         self.end_headers()
 
     def do_GET(self):
         if self.path == '/api/status':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             response = {
                 "status": "ok",
@@ -122,6 +119,12 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        origin = self.headers.get('Origin')
+        expected_origin = f"https://{self.headers.get('Host', '')}"
+        if origin and origin != expected_origin:
+            self.send_error(403, 'Cross-origin writes are not allowed')
+            return
+
         if self.path == '/api/save_capture':
             content_length = int(self.headers.get('Content-Length', 0))
             filename = self.headers.get('X-Filename', '')
@@ -139,7 +142,6 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
             print(f"[+] Saved security capture: {file_path} ({len(post_data)} bytes)")
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "path": file_path}).encode('utf-8'))
             return
@@ -160,7 +162,6 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
             print(f"[+] Saved debug log: {file_path}")
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "path": file_path}).encode('utf-8'))
             return
@@ -174,7 +175,6 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
         elif self.path.endswith('sw.js'):
             self.send_header('Service-Worker-Allowed', '/')
             self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Access-Control-Allow-Origin', '*')
         super().end_headers()
 
     def log_message(self, format, *args):

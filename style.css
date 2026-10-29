@@ -446,8 +446,10 @@ body {
 /* Status Indicator Strip */
 .status-strip {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 6px 14px;
   background: rgba(17, 24, 39, 0.6);
   border: 1px solid var(--border-color);
   border-radius: 10px;
