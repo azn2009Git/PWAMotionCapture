@@ -34,6 +34,8 @@
   let startTimeB = 0;
   let bufferRotationTimer = null;
   let activeEventRecorder = null; // Either 'A' or 'B' when motion trips
+  let activeEventDate = null;
+  let activeFinalizationPromise = null;
 
   // Motion Detection
   let motionThreshold = 15; // default 15%
@@ -129,7 +131,7 @@
   function showCaptureToast(blob, filename) {
     if (!captureToast) return;
     toastTitle.textContent = 'Capture Complete!';
-    toastSubtitle.textContent = `${(blob.size / 1024 / 1024).toFixed(1)} MB • Saved in App`;
+    toastSubtitle.textContent = `${(blob.size / 1024 / 1024).toFixed(1)} MB • Tap Save Video to choose a destination`;
 
     toastActionBtn.onclick = () => {
       triggerIOSShare(blob, filename);
@@ -211,7 +213,7 @@
 
   async function checkWindowsFolderUI() {
     if (!windowsFolderSetupWrap) return;
-    if (isWindows && 'showDirectoryPicker' in window) {
+    if (isWindows && !isLocalServerAvailable && 'showDirectoryPicker' in window) {
       windowsFolderSetupWrap.style.display = 'block';
       abyssDirHandle = await loadDirectoryHandle();
       if (abyssDirHandle) {
@@ -335,14 +337,20 @@
       }
       destinationSelect.value = 'cameraroll';
       storageRouteBadge.textContent = 'Default: Camera Roll';
+      destinationSelect.querySelector('option[value="windows"]').hidden = true;
     } else if (isWindows) {
       platformBadge.className = 'pill-badge active';
       platformText.textContent = 'Windows PC';
       destinationSelect.value = 'windows';
       storageRouteBadge.textContent = 'C:\\Abyss\\PWA_Captures';
+      destinationSelect.querySelector('option[value="cameraroll"]').hidden = true;
+      destinationSelect.querySelector('option[value="onedrive"]').hidden = true;
     } else {
       platformBadge.className = 'pill-badge';
       platformText.textContent = 'Web Browser';
+      destinationSelect.querySelector('option[value="windows"]').hidden = true;
+      destinationSelect.querySelector('option[value="cameraroll"]').textContent = 'Device Photos / Share Sheet';
+      destinationSelect.querySelector('option[value="onedrive"]').textContent = 'OneDrive / Files';
     }
 
     // Check if running on local server with direct Abyss API
@@ -351,7 +359,10 @@
       .then(data => {
         if (data.isLocalServer) {
           isLocalServerAvailable = true;
-          storageRouteBadge.textContent = 'Local Server (Direct Abyss Save)';
+          if (isWindows && destinationSelect.value === 'windows') {
+            storageRouteBadge.textContent = 'Local Server (Direct Abyss Save)';
+            if (windowsFolderSetupWrap) windowsFolderSetupWrap.style.display = 'none';
+          }
           console.log('[System] Local Python Abyss API detected and connected.');
         }
       })
@@ -379,9 +390,10 @@
     return { yyyy, MM, dd, hh, mm, ss };
   }
 
-  function formatCaptureFilename(date = new Date()) {
+  function formatCaptureFilename(date = new Date(), mimeType = getSupportedMimeType()) {
     const { yyyy, MM, dd, hh, mm, ss } = formatTimestampParts(date);
-    return `Capture_${yyyy}-${MM}-${dd}_${hh}-${mm}-${ss}.mp4`;
+    const extension = /^video\/mp4(?:;|$)/i.test(mimeType) ? 'mp4' : 'webm';
+    return `Capture_${yyyy}-${MM}-${dd}_${hh}-${mm}-${ss}.${extension}`;
   }
 
   function formatLogFilename(date = new Date()) {
@@ -394,6 +406,7 @@
     const now = new Date();
     const timeStr = now.toISOString();
     const line = `[${timeStr}] [${level}] ${message}`;
+    if (!logSessionActive) return;
     currentLogEntries.push(line);
     console.log(line);
 
@@ -429,7 +442,7 @@
     const logText = currentLogEntries.join('\n');
 
     // 1. If local Python server is running on Windows, save directly to C:\Abyss\PWALogs
-    if (isLocalServerAvailable) {
+    if (isWindows && isLocalServerAvailable) {
       try {
         const res = await fetch('/api/save_log', {
           method: 'POST',
@@ -471,9 +484,6 @@
   async function enumerateCameras() {
     try {
       // Trigger initial permission request to get device labels
-      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      tempStream.getTracks().forEach(t => t.stop());
-
       const devices = await navigator.mediaDevices.enumerateDevices();
       availableCameras = devices.filter(d => d.kind === 'videoinput');
 
@@ -505,7 +515,8 @@
         cameraSelect.appendChild(opt);
       });
 
-      // Default to rear camera on mobile if available
+      // Prefer the rear camera on mobile. Device labels may stay generic until
+      // the user grants permission from Start Monitoring.
       const rearCam = availableCameras.find(c => /back|rear|environment/i.test(c.label));
       if (rearCam) {
         cameraSelect.value = rearCam.deviceId;
@@ -514,11 +525,10 @@
       }
 
       selectedDeviceId = cameraSelect.value;
-      await startCameraStream(selectedDeviceId);
     } catch (err) {
       console.error('Error enumerating cameras:', err);
       appendLog(`Error accessing media hardware: ${err.message}`, 'ERROR');
-      alert('Camera / Microphone permission required: ' + err.message);
+      cameraSelect.innerHTML = '<option value="">Camera access unavailable</option>';
     }
   }
 
@@ -568,10 +578,35 @@
         micStatusText.style.color = 'var(--accent-emerald)';
       }
 
+      // Once permission is granted, browsers reveal camera names such as
+      // "Front Camera" and "Back Camera". Refresh the chooser labels without
+      // changing the camera the user just selected.
+      try {
+        const selectedId = selectedDeviceId || settings.deviceId || '';
+        availableCameras = (await navigator.mediaDevices.enumerateDevices())
+          .filter(device => device.kind === 'videoinput');
+        cameraSelect.innerHTML = '';
+        availableCameras.forEach((cam, idx) => {
+          const opt = document.createElement('option');
+          opt.value = cam.deviceId;
+          const label = cam.label || `Camera ${idx + 1}`;
+          opt.textContent = /front|user|facing front/i.test(label)
+            ? `Front Camera (${label})`
+            : /back|rear|environment|facing back/i.test(label)
+              ? `Rear Camera (${label})`
+              : label;
+          cameraSelect.appendChild(opt);
+        });
+        if (selectedId) selectedDeviceId = selectedId;
+        cameraSelect.value = selectedId;
+      } catch (enumerateError) {
+        // Camera access remains usable even if the browser hides device labels.
+      }
+
       appendLog(`Stream initialized: ${activeTrack.label} (${settings.width || 1280}x${settings.height || 720})`);
     } catch (err) {
       appendLog(`Failed to start camera stream: ${err.message}`, 'ERROR');
-      alert(`Could not start camera: ${err.message}`);
+      throw err;
     }
   }
 
@@ -589,6 +624,7 @@
       'video/webm;codecs=vp8,opus',
       'video/webm'
     ];
+    if (!window.MediaRecorder) return '';
     for (const type of candidates) {
       if (MediaRecorder.isTypeSupported(type)) {
         return type;
@@ -696,49 +732,75 @@
   }
 
   function startBufferCycle() {
+    if (bufferRotationTimer) {
+      clearInterval(bufferRotationTimer);
+      bufferRotationTimer = null;
+    }
     chunksA = [];
     chunksB = [];
     activeEventRecorder = null;
 
     // Start Recorder A
     recorderA = createRecorderInstance();
-    if (!recorderA) return;
+    if (!recorderA) return false;
 
+    const bufferAChunks = chunksA;
     recorderA.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
-        chunksA.push(e.data);
+        bufferAChunks.push({ blob: e.data, receivedAt: performance.now() });
       }
     };
-    recorderA.start(1000);
+    try {
+      recorderA.start(1000);
+    } catch (err) {
+      appendLog(`Failed to start pre-roll recorder: ${err.message}`, 'ERROR');
+      recorderA = null;
+      return false;
+    }
     startTimeA = performance.now();
     appendLog(`[Buffer] Pre-roll Buffer A started at t=0`);
 
     // Schedule Recorder B to start 5 seconds later
     setTimeout(() => {
       if (!isMonitoring || activeEventRecorder) return;
-      startRecorderB();
+      if (!startRecorderB()) {
+        appendLog('[ERROR] Could not start the second rolling buffer. Monitoring stopped.', 'ERROR');
+        stopMonitoring();
+      }
     }, BUFFER_ROTATION_INTERVAL_MS);
 
     // Set recurring 5-second buffer rotation timer
     bufferRotationTimer = setInterval(() => {
       if (!isMonitoring || activeEventRecorder) return;
-      rotateIdleBuffers();
+      if (!rotateIdleBuffers()) {
+        appendLog('[ERROR] Could not recycle a rolling buffer. Monitoring stopped.', 'ERROR');
+        stopMonitoring();
+      }
     }, BUFFER_ROTATION_INTERVAL_MS);
+    return true;
   }
 
   function startRecorderB() {
     chunksB = [];
     recorderB = createRecorderInstance();
-    if (!recorderB) return;
+    if (!recorderB) return false;
 
+    const bufferBChunks = chunksB;
     recorderB.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
-        chunksB.push(e.data);
+        bufferBChunks.push({ blob: e.data, receivedAt: performance.now() });
       }
     };
-    recorderB.start(1000);
+    try {
+      recorderB.start(1000);
+    } catch (err) {
+      appendLog(`Failed to start rolling buffer B: ${err.message}`, 'ERROR');
+      recorderB = null;
+      return false;
+    }
     startTimeB = performance.now();
     appendLog(`[Buffer] Pre-roll Buffer B started at t=+5s`);
+    return true;
   }
 
   function rotateIdleBuffers() {
@@ -753,11 +815,17 @@
         recorderA.stop();
       }
       chunksA = [];
+      const bufferAChunks = chunksA;
       recorderA = createRecorderInstance();
+      if (!recorderA) return false;
       recorderA.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksA.push(e.data);
+        if (e.data && e.data.size > 0) bufferAChunks.push({ blob: e.data, receivedAt: performance.now() });
       };
-      recorderA.start(1000);
+      try { recorderA.start(1000); } catch (err) {
+        appendLog(`Failed to recycle buffer A: ${err.message}`, 'ERROR');
+        recorderA = null;
+        return false;
+      }
       startTimeA = performance.now();
     }
     // Else if Recorder B is older than 10 seconds and A is ready, recycle B
@@ -767,13 +835,20 @@
         recorderB.stop();
       }
       chunksB = [];
+      const bufferBChunks = chunksB;
       recorderB = createRecorderInstance();
+      if (!recorderB) return false;
       recorderB.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksB.push(e.data);
+        if (e.data && e.data.size > 0) bufferBChunks.push({ blob: e.data, receivedAt: performance.now() });
       };
-      recorderB.start(1000);
+      try { recorderB.start(1000); } catch (err) {
+        appendLog(`Failed to recycle buffer B: ${err.message}`, 'ERROR');
+        recorderB = null;
+        return false;
+      }
       startTimeB = performance.now();
     }
+    return true;
   }
 
   function stopBufferCycle() {
@@ -802,21 +877,34 @@
     }
 
     if (!isRecordingMotion) {
-      isRecordingMotion = true;
       const now = performance.now();
       const ageA = (now - startTimeA) / 1000;
       const ageB = startTimeB ? (now - startTimeB) / 1000 : 0;
 
-      // Select whichever buffer has at least ~5 seconds of pre-roll
-      if (ageA >= 4.5 && (ageA <= 10.5 || ageB < 4.5)) {
+      const recorderAReady = recorderA && recorderA.state === 'recording';
+      const recorderBReady = recorderB && recorderB.state === 'recording';
+      if (!recorderAReady && !recorderBReady) {
+        appendLog('[ERROR] Motion detected but no rolling recorder is available.', 'ERROR');
+        return;
+      }
+
+      // Use the older continuous buffer for the most pre-roll. During the
+      // first five seconds, use whatever history is available in buffer A.
+      if (recorderAReady && (!recorderBReady || ageA >= ageB)) {
         activeEventRecorder = 'A';
-        appendLog(`[EVENT] Motion Triggered (${currentMotionPercent}%)! Selected Buffer A (Pre-roll: ${ageA.toFixed(1)}s).`);
-        if (recorderB && recorderB.state === 'recording') recorderB.stop();
+        trimBufferForPreRoll(chunksA, now);
+        const preRollSeconds = Math.min(PRE_ROLL_SEC, ageA);
+        appendLog(`[EVENT] Motion Triggered (${currentMotionPercent}%)! Selected Buffer A (Pre-roll: about ${preRollSeconds.toFixed(1)}s).`);
+        if (recorderBReady) recorderB.stop();
       } else {
         activeEventRecorder = 'B';
-        appendLog(`[EVENT] Motion Triggered (${currentMotionPercent}%)! Selected Buffer B (Pre-roll: ${ageB.toFixed(1)}s).`);
-        if (recorderA && recorderA.state === 'recording') recorderA.stop();
+        trimBufferForPreRoll(chunksB, now);
+        const preRollSeconds = Math.min(PRE_ROLL_SEC, ageB);
+        appendLog(`[EVENT] Motion Triggered (${currentMotionPercent}%)! Selected Buffer B (Pre-roll: about ${preRollSeconds.toFixed(1)}s).`);
+        if (recorderAReady) recorderA.stop();
       }
+      isRecordingMotion = true;
+      activeEventDate = new Date();
 
       // Update HUD
       cameraFrameContainer.className = 'top-camera-frame motion-triggered';
@@ -825,6 +913,14 @@
       systemStateBadge.className = 'pill-badge recording';
       systemStateText.textContent = 'RECORDING';
     }
+  }
+
+  function trimBufferForPreRoll(chunks, triggerTime) {
+    const cutoff = triggerTime - PRE_ROLL_SEC * 1000;
+    // Each MediaRecorder timeslice is about one second. Keep the slice that
+    // overlaps the five-second boundary so the clip never starts late.
+    const firstIndex = chunks.findIndex(chunk => chunk.receivedAt >= cutoff - 1000);
+    if (firstIndex > 0) chunks.splice(0, firstIndex);
   }
 
   function handleMotionCleared() {
@@ -852,8 +948,11 @@
     }
   }
 
-  async function finalizeSecurityEvent() {
-    appendLog(`[EVENT] 5-second post-roll complete. Finalizing security capture.`);
+  async function finalizeSecurityEvent(stoppedByUser = false) {
+    if (activeFinalizationPromise) return activeFinalizationPromise;
+    appendLog(stoppedByUser
+      ? '[EVENT] Monitoring stopped during motion. Finalizing the active capture now.'
+      : '[EVENT] 5-second post-roll complete. Finalizing security capture.');
     isRecordingMotion = false;
 
     const chosenRecorder = activeEventRecorder === 'A' ? recorderA : recorderB;
@@ -861,28 +960,48 @@
 
     if (!chosenRecorder || chosenRecorder.state !== 'recording') {
       appendLog(`[WARN] Active recorder not recording during finalization`, 'WARN');
+      activeEventRecorder = null;
       resumeMonitoringState();
       return;
     }
 
-    // Set onstop handler to package and export the file
-    chosenRecorder.onstop = async () => {
-      const mimeType = getSupportedMimeType() || 'video/mp4';
-      const videoBlob = new Blob(chosenChunks, { type: mimeType });
-      const filename = formatCaptureFilename(new Date());
-
-      appendLog(`[Capture] Package complete: ${filename} | Size: ${(videoBlob.size / 1024 / 1024).toFixed(2)} MB`);
-
-      await routeAndSaveCapture(videoBlob, filename);
-
-      // Add to on-screen gallery
-      addCaptureToGallery(videoBlob, filename);
-
-      // Reset and resume pre-roll buffer cycle for next event
-      resumeMonitoringState();
-    };
-
-    chosenRecorder.stop();
+    activeFinalizationPromise = new Promise((resolve) => {
+      let completed = false;
+      const finish = async () => {
+        if (completed) return;
+        completed = true;
+        try {
+          const mimeType = chosenRecorder.mimeType || getSupportedMimeType() || 'video/webm';
+          const videoBlob = new Blob(chosenChunks.map(chunk => chunk.blob), { type: mimeType });
+          if (!videoBlob.size) {
+            appendLog('[ERROR] Capture was empty; no media data was produced.', 'ERROR');
+            return;
+          }
+          const filename = formatCaptureFilename(activeEventDate || new Date(), mimeType);
+          appendLog(`[Capture] Package complete: ${filename} | Type: ${mimeType} | Size: ${(videoBlob.size / 1024 / 1024).toFixed(2)} MB`);
+          await routeAndSaveCapture(videoBlob, filename);
+        } catch (err) {
+          appendLog(`[ERROR] Could not save capture: ${err.message}`, 'ERROR');
+        } finally {
+          activeEventRecorder = null;
+          activeEventDate = null;
+          activeFinalizationPromise = null;
+          resumeMonitoringState();
+          resolve();
+        }
+      };
+      chosenRecorder.onstop = finish;
+      chosenRecorder.onerror = (event) => {
+        appendLog(`[ERROR] Recorder failed: ${event.error?.message || 'unknown media error'}`, 'ERROR');
+      };
+      try {
+        chosenRecorder.stop();
+      } catch (err) {
+        appendLog(`[ERROR] Could not stop capture recorder: ${err.message}`, 'ERROR');
+        finish();
+      }
+    });
+    return activeFinalizationPromise;
   }
 
   function resumeMonitoringState() {
@@ -895,23 +1014,26 @@
     systemStateText.textContent = 'MONITORING';
 
     // Restart ping-pong buffer
-    startBufferCycle();
+    if (!startBufferCycle()) {
+      appendLog('[ERROR] Could not start the rolling video buffer. Monitoring stopped.', 'ERROR');
+      stopMonitoring();
+    }
   }
 
   // Trigger native share on iOS from direct user interaction
   async function triggerIOSShare(blob, filename) {
-    const file = new File([blob], filename, { type: 'video/mp4' });
+    const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
     const isOneDrive = destinationSelect.value === 'onedrive';
 
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
-        appendLog(`[iOS] Opening iOS Share Sheet for: ${filename}`);
+        appendLog(`[Share] Opening the system share sheet for: ${filename}`);
         await navigator.share({
           title: filename,
           text: isOneDrive ? 'Save security capture to OneDrive' : 'Save security capture to Camera Roll',
           files: [file]
         });
-        appendLog(`[SUCCESS] Saved/Shared ${filename} via iOS Share Sheet`);
+        appendLog(`[SUCCESS] Shared ${filename} via the system share sheet`);
       } catch (err) {
         if (err.name !== 'AbortError') {
           console.warn('Share error:', err);
@@ -923,59 +1045,6 @@
     }
   }
 
-  // Direct Auto-Save to OneDrive/MyCaptures without user prompts
-  async function saveToOneDrive(blob, filename) {
-    appendLog(`[OneDrive] Initiating direct auto-save to OneDrive/MyCaptures...`);
-
-    // 1. If currently connected to local server directly (e.g. on localhost or via local IP)
-    if (isLocalServerAvailable) {
-      try {
-        const res = await fetch('/api/save_onedrive', {
-          method: 'POST',
-          headers: { 'X-Filename': filename, 'Content-Type': blob.type },
-          body: blob
-        });
-        const result = await res.json();
-        if (result.success) {
-          appendLog(`[SUCCESS] Saved directly to OneDrive/MyCaptures: ${filename}`);
-          hudStatusDot.style.color = '#10b981';
-          hudStatusText.textContent = `SAVED TO ONEDRIVE (MyCaptures)`;
-          return true;
-        }
-      } catch (err) {
-        appendLog(`Local OneDrive save failed: ${err.message}`, 'WARN');
-      }
-    }
-
-    // 2. If running on iPhone on same Wi-Fi, upload directly to the laptop's OneDrive server
-    const lanServerUrl = 'https://192.168.1.53:8443/api/save_onedrive';
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(lanServerUrl, {
-        method: 'POST',
-        headers: { 'X-Filename': filename, 'Content-Type': blob.type },
-        body: blob,
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      const result = await res.json();
-      if (result.success) {
-        appendLog(`[SUCCESS] Uploaded over Wi-Fi directly to OneDrive/MyCaptures: ${filename}`);
-        hudStatusDot.style.color = '#10b981';
-        hudStatusText.textContent = `SAVED TO ONEDRIVE (MyCaptures)`;
-        return true;
-      }
-    } catch (err) {
-      appendLog(`Wi-Fi OneDrive sync to 192.168.1.53:8443 unavailable (${err.name === 'AbortError' ? 'timeout' : err.message})`, 'INFO');
-    }
-
-    // 3. Always preserved in the app's persistent gallery
-    appendLog(`[OneDrive] Preserved in offline app gallery: ${filename}`);
-    hudStatusText.textContent = `CAPTURED (Gallery)`;
-    return false;
-  }
-
   // --- 8. File Storage Routing (Windows vs iPhone) ---
   async function routeAndSaveCapture(blob, filename) {
     const dest = destinationSelect.value;
@@ -985,15 +1054,9 @@
     // Always add to persistent in-app gallery & IndexedDB
     await addCaptureToGallery(blob, filename, true);
 
-    // 1. Direct Silent Save to OneDrive/MyCaptures (No prompts!)
-    if (dest === 'onedrive') {
-      await saveToOneDrive(blob, filename);
-      return;
-    }
-
-    // 2. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
-    if (dest === 'windows' || isLocalServerAvailable) {
-      if (isLocalServerAvailable) {
+    // 1. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
+    if (dest === 'windows') {
+      if (isWindows && isLocalServerAvailable) {
         try {
           const res = await fetch('/api/save_capture', {
             method: 'POST',
@@ -1029,10 +1092,11 @@
       return;
     }
 
-    // 3. iPhone Camera Roll (Saved to in-app database silently without popup)
-    if (isIOS || dest === 'cameraroll') {
-      appendLog(`[iOS] Saved automatically into persistent app database: ${filename} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
-      hudStatusText.textContent = `CAPTURED (Gallery)`;
+    // 2. iPhone (Camera Roll or OneDrive)
+    if (isIOS || dest === 'cameraroll' || dest === 'onedrive') {
+      appendLog(`[Capture] Stored in the app gallery: ${filename} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
+      // Show floating notification toast with direct tap action (no browser download popup!)
+      showCaptureToast(blob, filename);
       return;
     }
   }
@@ -1088,7 +1152,9 @@
 
     const saveShareBtn = document.createElement('button');
     saveShareBtn.className = 'btn-small-share';
-    saveShareBtn.innerHTML = destinationSelect.value === 'onedrive' ? '☁️ OneDrive' : '📲 Camera Roll';
+    saveShareBtn.textContent = isWindows
+      ? 'Save Video'
+      : destinationSelect.value === 'onedrive' ? 'OneDrive' : 'Camera Roll';
     saveShareBtn.onclick = () => {
       triggerIOSShare(blob, filename);
     };
@@ -1142,12 +1208,30 @@
 
   // --- 9. Start / Stop Monitoring Handler ---
   async function startMonitoring() {
-    if (!currentCameraStream) {
-      await startCameraStream(selectedDeviceId);
+    if (isMonitoring) return;
+    toggleMonitorBtn.disabled = true;
+    startNewLogSession();
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera access is unavailable. Open this app over HTTPS in a supported browser.');
+      }
+      if (!window.MediaRecorder) {
+        throw new Error('This browser does not support video recording.');
+      }
+      if (!currentCameraStream) await startCameraStream(selectedDeviceId);
+      if (!currentCameraStream) throw new Error('The camera could not be started.');
+    } catch (err) {
+      appendLog(`Monitoring could not start: ${err.message}`, 'ERROR');
+      await finalizeAndSaveLog();
+      toggleMonitorBtn.disabled = false;
+      alert(`Could not start monitoring: ${err.message}`);
+      return;
     }
 
     isMonitoring = true;
-    startNewLogSession();
+    toggleMonitorBtn.disabled = false;
+    cameraSelect.disabled = true;
+    destinationSelect.disabled = true;
 
     // Update Button UI
     toggleMonitorBtn.classList.add('active');
@@ -1162,14 +1246,17 @@
 
     // Start motion detector & rolling buffers
     startMotionAnalysis();
-    startBufferCycle();
+    if (!startBufferCycle()) {
+      appendLog('[ERROR] Could not start the rolling video buffer. Monitoring stopped.', 'ERROR');
+      await stopMonitoring();
+      return;
+    }
 
     appendLog(`Monitoring armed. Listening for motion threshold: ${motionThreshold}%`);
   }
 
   async function stopMonitoring() {
     isMonitoring = false;
-    isRecordingMotion = false;
 
     if (postRollCountdownTimer) {
       clearInterval(postRollCountdownTimer);
@@ -1177,10 +1264,26 @@
     }
 
     stopMotionAnalysis();
+    if (isRecordingMotion || activeFinalizationPromise) {
+      appendLog('[Motion] Stop requested while an event was active; the clip will be finalized now.');
+    }
+    // Freeze and save the session log at the Stop click. Capture finalization
+    // may continue asynchronously, but it must not add more session entries.
+    await finalizeAndSaveLog();
+
+    // Keep any active event and its pre-roll, then close it cleanly when the
+    // user stops monitoring instead of silently discarding the recording.
+    if (activeFinalizationPromise) {
+      await activeFinalizationPromise;
+    } else if (isRecordingMotion && activeEventRecorder) {
+      await finalizeSecurityEvent(true);
+    }
     stopBufferCycle();
 
     // Update UI
     toggleMonitorBtn.classList.remove('active');
+    cameraSelect.disabled = false;
+    destinationSelect.disabled = false;
     monitorBtnIcon.textContent = '▶️';
     monitorBtnText.textContent = 'Start Monitoring';
 
@@ -1190,7 +1293,6 @@
     systemStateBadge.className = 'pill-badge';
     systemStateText.textContent = 'Standby';
 
-    await finalizeAndSaveLog();
   }
 
   toggleMonitorBtn.addEventListener('click', () => {
@@ -1261,7 +1363,12 @@
 
   reopenAppBtn.addEventListener('click', async () => {
     appClosedOverlay.classList.add('hidden');
-    await startCameraStream(selectedDeviceId);
+    try {
+      await startCameraStream(selectedDeviceId);
+    } catch (err) {
+      alert(`Could not reopen the camera: ${err.message}`);
+      appClosedOverlay.classList.remove('hidden');
+    }
   });
 
   // --- 12. Service Worker Registration ---
@@ -1285,6 +1392,15 @@
         checkWindowsFolderUI();
       } else if (windowsFolderSetupWrap) {
         windowsFolderSetupWrap.style.display = 'none';
+      }
+      if (destinationSelect.value === 'onedrive') {
+        storageRouteBadge.textContent = 'Share Sheet: OneDrive';
+      } else if (destinationSelect.value === 'cameraroll') {
+        storageRouteBadge.textContent = 'Share Sheet: Camera Roll';
+      } else {
+        storageRouteBadge.textContent = isLocalServerAvailable
+          ? 'Local Server (Direct Abyss Save)'
+          : 'C:\\Abyss\\PWA_Captures';
       }
     });
   }

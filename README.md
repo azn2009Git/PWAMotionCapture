@@ -1,60 +1,37 @@
-# Security Motion Capture PWA
+﻿# Security Motion Capture PWA
 
-A Progressive Web App (PWA) designed to run on **Apple iPhone (iOS Safari)** and **Windows / Laptops** as a security monitoring system with audio/video recording, real-time motion detection, and automated 5-second pre-roll / post-roll event capture.
+A Progressive Web App for monitoring a selected camera and microphone, detecting visual motion, and saving event clips with a rolling pre-roll buffer.
 
----
+## Behavior
 
-## 🌟 Key Features
+- Camera and microphone permission is requested when you click **Start Monitoring**.
+- The camera preview and camera chooser are available on the main screen. After permission is granted, the chooser displays camera names reported by the device, including front and rear labels where available.
+- When motion is detected, the app saves approximately the five seconds before the trigger, continues through the motion, and includes five seconds after motion stops.
+- If you click **Stop Monitoring** during an active event, the app immediately closes and saves that event.
+- Captures are named `Capture_YYYY-MM-DD_HH-mm-ss.ext`. The app prefers MP4 when the browser supports it and uses the matching `.webm` extension when the browser records WebM.
+- Debug logs are named `Log_YYYY-MM-DD_HH-mm-ss.txt`. Logging stops when monitoring stops.
 
-1. **Top Viewfinder HUD (Requirement 1 & 2)**:
-   - Live camera frame showing what the camera sees.
-   - Real-time Motion Activity Level meter (0% to 100%) and trigger threshold marker.
-   - Armed status banner and real-time clock.
-2. **Device & Camera Selection (Requirement 3)**:
-   - Front vs Rear facing camera selector on Apple iPhones & Android.
-   - Dropdown of all available video hardware on Windows laptops and PCs.
-3. **5-Second Pre-Roll & 5-Second Post-Roll (Requirement 1)**:
-   - Continuously buffers video and audio before motion occurs.
-   - When motion is tripped, saves the **previous 5 seconds** of audio and video.
-   - Continues recording during the entire motion event.
-   - Keeps recording for **5 seconds after motion ceases** before closing the file.
-4. **Strict Filename Formats (Requirement 1 & 4)**:
-   - Video Captures: `Capture_YYYY-MM-DD_HH-mm-ss.mp4`  
-     *(e.g., `Capture_2026-10-29_13-02-57.mp4`)*
-   - Debug Logs: `Log_YYYY-MM-DD_HH-mm-ss.txt`  
-     *(e.g., `Log_2026-10-29_15-01-56.txt`)*
-5. **Storage Routing (Requirement 1 & 4)**:
-   - **Windows**: Automatically creates and saves into `C:\Abyss\PWA_Captures` (videos) and `C:\Abyss\PWALogs` (debug logs).
-   - **Apple iPhone**: Defaults to saving into the **Camera Roll (Photos App)** via native iOS Share Sheet, or allows selecting **OneDrive / Files App** from the destination dropdown.
-6. **Session Debug Logging & One-Click Copy (Requirement 4)**:
-   - A fresh log file is created each time "Start Monitoring" is clicked.
-   - Logging automatically stops when "Stop Monitoring" is clicked.
-   - **"📋 View / Copy Debug Log"** button opens a modal to view and copy the log directly to clipboard to send for debugging.
-7. **Close App Button (Requirement 5)**:
-   - Safely releases camera and microphone hardware tracks and closes the window.
+## Saving
 
----
+### Windows
 
-## 📱 How to Run & Test
+The local HTTPS server creates `C:\Abyss\PWA_Captures` and `C:\Abyss\PWALogs` and saves captures and logs there. If you host the PWA elsewhere, use **Link C:\Abyss Folder for Direct Saving** once and select `C:\Abyss`; the browser then writes into the two subfolders. If direct saving is unavailable, captures and logs download through the browser.
 
-### Option 1: Local HTTPS Server (Instant Wi-Fi iPhone Testing)
-1. Double-click `start_server.bat` or run:
-   ```powershell
-   cd C:\Abyss\PWAMotionCapture
-   python serve_https.py
-   ```
-2. On your iPhone, open Safari and navigate to your Wi-Fi IP (e.g. `https://192.168.1.53:8443/`).
-3. Tap **"Show Details"** &rarr; **"visit this website"** to accept the local certificate.
-4. Tap Safari's **Share** button &rarr; **"Add to Home Screen"** &rarr; **"Add"**.
-5. Open the app from your home screen.
+### iPhone
 
-### Option 2: Upload to GitHub Pages
-To publish changes to your repository:
+The app keeps captures in its in-app gallery and offers a **Save Video** action. Tapping it opens the iOS Share Sheet; choose **Save Video** for Photos or OneDrive to send the clip to OneDrive. The website cannot write directly into Photos or choose a OneDrive folder without the Share Sheet.
+
+Use **View / Copy Debug Log** to copy the current or most recent session log. On Windows, the local server writes each session log to `C:\Abyss\PWALogs`.
+
+## Run locally over HTTPS
+
+Camera and microphone access require a secure context. From this folder, run:
+
 ```powershell
-cd C:\Abyss\PWAMotionCapture
-git add .
-git commit -m "Implement Security Motion Capture with 5s pre/post roll and logging"
-git push origin main
+py -3 -m pip install -r requirements.txt
+py -3 serve_https.py
 ```
-Your GitHub Pages URL will update at:
-`https://azn2009git.github.io/PWAMotionCapture/`
+
+Or double-click `start_server.bat`. Open the HTTPS address printed by the server. For iPhone testing, the phone and PC must be on the same Wi-Fi network and the iPhone must accept the local development certificate. Add the page to the Home Screen from Safari to run it in standalone mode.
+
+The local server requires Python 3 and the `cryptography` package to generate a development certificate when one is not already present. It creates the output folders at startup and serves this directory over HTTPS on port 8443.
