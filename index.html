@@ -97,14 +97,17 @@
           </select>
         </div>
 
-        <!-- Destination Selector (iPhone: Camera Roll vs OneDrive; Windows: C:\Abyss) -->
+        <!-- Destination Selector -->
         <div class="form-group">
           <label for="destinationSelect"><span>💾</span> Save Destination:</label>
           <select id="destinationSelect" class="form-select">
-            <option value="cameraroll">iPhone: Camera Roll (Photos App)</option>
-            <option value="onedrive">iPhone: OneDrive / Files App</option>
+            <option value="onedrive">OneDrive: MyCaptures (Direct Auto-Save)</option>
             <option value="windows">Windows: C:\Abyss\PWA_Captures</option>
+            <option value="cameraroll">iPhone: Camera Roll (Photos App)</option>
           </select>
+          <div id="oneDriveStatusWrap" style="margin-top:4px; font-size:0.72rem; color:var(--accent-emerald);">
+            <span>📁 Target: OneDrive/MyCaptures (Silently saved without prompts)</span>
+          </div>
           <div id="windowsFolderSetupWrap" style="display:none; margin-top:4px;">
             <button id="linkAbyssFolderBtn" type="button" class="btn-secondary" style="width:100%; font-size:0.75rem; padding:6px 10px;">
               📂 Link C:\Abyss Folder for Direct Saving

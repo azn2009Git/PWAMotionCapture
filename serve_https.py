@@ -26,8 +26,15 @@ DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 CAPTURES_DIR = r"C:\Abyss\PWA_Captures"
 LOGS_DIR = r"C:\Abyss\PWALogs"
 
+# OneDrive MyCaptures folder
+ONEDRIVE_DIR = r"C:\Users\super\OneDrive\MyCaptures"
+if not os.path.exists(r"C:\Users\super\OneDrive"):
+    if os.path.exists(r"C:\Users\super\OneDrive - Mountain West Services"):
+        ONEDRIVE_DIR = r"C:\Users\super\OneDrive - Mountain West Services\MyCaptures"
+
 os.makedirs(CAPTURES_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(ONEDRIVE_DIR, exist_ok=True)
 
 
 def get_local_ip():
@@ -114,7 +121,8 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
                 "status": "ok",
                 "isLocalServer": True,
                 "capturesDir": CAPTURES_DIR,
-                "logsDir": LOGS_DIR
+                "logsDir": LOGS_DIR,
+                "oneDriveDir": ONEDRIVE_DIR
             }
             self.wfile.write(json.dumps(response).encode('utf-8'))
             return
@@ -122,6 +130,26 @@ class SecurityPWAHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        if self.path == '/api/save_onedrive':
+            content_length = int(self.headers.get('Content-Length', 0))
+            filename = self.headers.get('X-Filename', '')
+            if not filename:
+                filename = f"Capture_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+
+            filename = os.path.basename(filename)
+            file_path = os.path.join(ONEDRIVE_DIR, filename)
+
+            post_data = self.rfile.read(content_length)
+            with open(file_path, 'wb') as f:
+                f.write(post_data)
+
+            print(f"[+] Saved to OneDrive/MyCaptures: {file_path} ({len(post_data)} bytes)")
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "path": file_path}).encode('utf-8'))
+            return
         if self.path == '/api/save_capture':
             content_length = int(self.headers.get('Content-Length', 0))
             filename = self.headers.get('X-Filename', '')

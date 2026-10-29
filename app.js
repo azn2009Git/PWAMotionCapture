@@ -923,6 +923,59 @@
     }
   }
 
+  // Direct Auto-Save to OneDrive/MyCaptures without user prompts
+  async function saveToOneDrive(blob, filename) {
+    appendLog(`[OneDrive] Initiating direct auto-save to OneDrive/MyCaptures...`);
+
+    // 1. If currently connected to local server directly (e.g. on localhost or via local IP)
+    if (isLocalServerAvailable) {
+      try {
+        const res = await fetch('/api/save_onedrive', {
+          method: 'POST',
+          headers: { 'X-Filename': filename, 'Content-Type': blob.type },
+          body: blob
+        });
+        const result = await res.json();
+        if (result.success) {
+          appendLog(`[SUCCESS] Saved directly to OneDrive/MyCaptures: ${filename}`);
+          hudStatusDot.style.color = '#10b981';
+          hudStatusText.textContent = `SAVED TO ONEDRIVE (MyCaptures)`;
+          return true;
+        }
+      } catch (err) {
+        appendLog(`Local OneDrive save failed: ${err.message}`, 'WARN');
+      }
+    }
+
+    // 2. If running on iPhone on same Wi-Fi, upload directly to the laptop's OneDrive server
+    const lanServerUrl = 'https://192.168.1.53:8443/api/save_onedrive';
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(lanServerUrl, {
+        method: 'POST',
+        headers: { 'X-Filename': filename, 'Content-Type': blob.type },
+        body: blob,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      const result = await res.json();
+      if (result.success) {
+        appendLog(`[SUCCESS] Uploaded over Wi-Fi directly to OneDrive/MyCaptures: ${filename}`);
+        hudStatusDot.style.color = '#10b981';
+        hudStatusText.textContent = `SAVED TO ONEDRIVE (MyCaptures)`;
+        return true;
+      }
+    } catch (err) {
+      appendLog(`Wi-Fi OneDrive sync to 192.168.1.53:8443 unavailable (${err.name === 'AbortError' ? 'timeout' : err.message})`, 'INFO');
+    }
+
+    // 3. Always preserved in the app's persistent gallery
+    appendLog(`[OneDrive] Preserved in offline app gallery: ${filename}`);
+    hudStatusText.textContent = `CAPTURED (Gallery)`;
+    return false;
+  }
+
   // --- 8. File Storage Routing (Windows vs iPhone) ---
   async function routeAndSaveCapture(blob, filename) {
     const dest = destinationSelect.value;
@@ -932,7 +985,13 @@
     // Always add to persistent in-app gallery & IndexedDB
     await addCaptureToGallery(blob, filename, true);
 
-    // 1. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
+    // 1. Direct Silent Save to OneDrive/MyCaptures (No prompts!)
+    if (dest === 'onedrive') {
+      await saveToOneDrive(blob, filename);
+      return;
+    }
+
+    // 2. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
     if (dest === 'windows' || isLocalServerAvailable) {
       if (isLocalServerAvailable) {
         try {
@@ -970,11 +1029,10 @@
       return;
     }
 
-    // 2. iPhone (Camera Roll or OneDrive)
-    if (isIOS || dest === 'cameraroll' || dest === 'onedrive') {
+    // 3. iPhone Camera Roll (Saved to in-app database silently without popup)
+    if (isIOS || dest === 'cameraroll') {
       appendLog(`[iOS] Saved automatically into persistent app database: ${filename} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
-      // Show floating notification toast with direct tap action (no browser download popup!)
-      showCaptureToast(blob, filename);
+      hudStatusText.textContent = `CAPTURED (Gallery)`;
       return;
     }
   }
