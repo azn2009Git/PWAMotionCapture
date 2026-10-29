@@ -50,7 +50,122 @@
   let isWindows = false;
   let isIOS = false;
   let isLocalServerAvailable = false;
+  let abyssDirHandle = null;
   let totalCapturesCount = 0;
+
+  // Windows Directory Handle Elements
+  const windowsFolderSetupWrap = document.getElementById('windowsFolderSetupWrap');
+  const linkAbyssFolderBtn = document.getElementById('linkAbyssFolderBtn');
+  const windowsFolderStatusText = document.getElementById('windowsFolderStatusText');
+
+  // --- IndexedDB for Persistent Folder Handle Access ---
+  function getDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('SecurityCamDB', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('handles');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function saveDirectoryHandle(handle) {
+    try {
+      const db = await getDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('handles', 'readwrite');
+        tx.objectStore('handles').put(handle, 'abyss_dir');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('Could not persist directory handle in DB:', e);
+    }
+  }
+
+  async function loadDirectoryHandle() {
+    try {
+      const db = await getDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction('handles', 'readonly');
+        const req = tx.objectStore('handles').get('abyss_dir');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function saveToAbyssFolder(abyssHandle, subfolderName, filename, data) {
+    const opts = { mode: 'readwrite' };
+    let perm = await abyssHandle.queryPermission(opts);
+    if (perm !== 'granted') {
+      perm = await abyssHandle.requestPermission(opts);
+      if (perm !== 'granted') return false;
+    }
+
+    const subDir = await abyssHandle.getDirectoryHandle(subfolderName, { create: true });
+    const fileHandle = await subDir.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(data);
+    await writable.close();
+    return true;
+  }
+
+  async function checkWindowsFolderUI() {
+    if (!windowsFolderSetupWrap) return;
+    if (isWindows && 'showDirectoryPicker' in window) {
+      windowsFolderSetupWrap.style.display = 'block';
+      abyssDirHandle = await loadDirectoryHandle();
+      if (abyssDirHandle) {
+        try {
+          const perm = await abyssDirHandle.queryPermission({ mode: 'readwrite' });
+          if (perm === 'granted') {
+            updateFolderUI(true);
+            return;
+          }
+        } catch (e) {}
+      }
+      updateFolderUI(false);
+    } else {
+      windowsFolderSetupWrap.style.display = 'none';
+    }
+  }
+
+  function updateFolderUI(isLinked) {
+    if (!linkAbyssFolderBtn || !windowsFolderStatusText) return;
+    if (isLinked) {
+      linkAbyssFolderBtn.innerHTML = '<span>✔️</span> C:\\Abyss Linked (Direct Save Active)';
+      linkAbyssFolderBtn.style.borderColor = 'var(--accent-emerald)';
+      linkAbyssFolderBtn.style.color = 'var(--accent-emerald)';
+      windowsFolderStatusText.textContent = 'Files save directly into C:\\Abyss\\PWA_Captures & PWALogs';
+    } else {
+      linkAbyssFolderBtn.innerHTML = '<span>📂</span> Link C:\\Abyss Folder for Direct Saving';
+      linkAbyssFolderBtn.style.borderColor = 'var(--border-color)';
+      linkAbyssFolderBtn.style.color = 'var(--text-main)';
+      windowsFolderStatusText.textContent = 'Click to grant direct save access to C:\\Abyss without downloading';
+    }
+  }
+
+  if (linkAbyssFolderBtn) {
+    linkAbyssFolderBtn.addEventListener('click', async () => {
+      try {
+        const handle = await window.showDirectoryPicker({
+          id: 'abyss_captures_folder',
+          mode: 'readwrite'
+        });
+        abyssDirHandle = handle;
+        await saveDirectoryHandle(handle);
+        updateFolderUI(true);
+        appendLog(`[Setup] User linked directory: ${handle.name}`);
+        alert(`Successfully linked "${handle.name}"!\nCaptures will now save directly to PWA_Captures and PWALogs.`);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          alert('Could not link folder: ' + err.message);
+        }
+      }
+    });
+  }
 
   // --- DOM Elements ---
   const platformBadge = document.getElementById('platformBadge');
@@ -206,7 +321,7 @@
 
     const logText = currentLogEntries.join('\n');
 
-    // If local Python server is running on Windows, save directly to C:\Abyss\PWALogs
+    // 1. If local Python server is running on Windows, save directly to C:\Abyss\PWALogs
     if (isLocalServerAvailable) {
       try {
         const res = await fetch('/api/save_log', {
@@ -217,10 +332,31 @@
         const data = await res.json();
         if (data.success) {
           console.log(`[Log] Saved debug log directly to: ${data.path}`);
+          return;
         }
       } catch (err) {
         console.warn('[Log] Failed to auto-save log via local server API:', err);
       }
+    }
+
+    // 2. If user linked C:\Abyss folder, save directly to C:\Abyss\PWALogs
+    if (abyssDirHandle) {
+      try {
+        const ok = await saveToAbyssFolder(abyssDirHandle, 'PWALogs', currentLogFilename, logText);
+        if (ok) {
+          console.log(`[Log] Saved debug log directly to C:\\Abyss\\PWALogs\\${currentLogFilename}`);
+          return;
+        }
+      } catch (fsErr) {
+        console.warn('Could not write log to Abyss directory:', fsErr);
+      }
+    }
+
+    // 3. Fallback on Windows: trigger auto-download of the log file so it is never lost
+    if (isWindows) {
+      const logBlob = new Blob([logText], { type: 'text/plain' });
+      triggerBrowserDownload(logBlob, currentLogFilename);
+      console.log(`[Log] Log file downloaded: ${currentLogFilename}`);
     }
   }
 
@@ -661,7 +797,7 @@
     totalCapturesCount++;
     captureCountLabel.textContent = totalCapturesCount;
 
-    // 1. Windows C:\Abyss\PWA_Captures (Local Server)
+    // 1. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
     if (dest === 'windows' || isLocalServerAvailable) {
       if (isLocalServerAvailable) {
         try {
@@ -676,13 +812,26 @@
             return;
           }
         } catch (err) {
-          appendLog(`Local server save failed: ${err.message}. Falling back to browser save.`, 'WARN');
+          appendLog(`Local server save failed: ${err.message}. Falling back to direct folder access.`, 'WARN');
+        }
+      }
+
+      // Check if user linked C:\Abyss folder via File System Access API
+      if (abyssDirHandle) {
+        try {
+          const ok = await saveToAbyssFolder(abyssDirHandle, 'PWA_Captures', filename, blob);
+          if (ok) {
+            appendLog(`[SUCCESS] Saved directly to C:\\Abyss\\PWA_Captures\\${filename} via File System API!`);
+            return;
+          }
+        } catch (fsErr) {
+          appendLog(`Direct folder save error: ${fsErr.message}. Falling back to browser download.`, 'WARN');
         }
       }
 
       // Browser download fallback on Windows
       triggerBrowserDownload(blob, filename);
-      appendLog(`[Windows] Download triggered: ${filename}`);
+      appendLog(`[Windows] Download triggered: ${filename} (Saved to Downloads folder)`);
       return;
     }
 
@@ -934,5 +1083,17 @@
 
   // Initial load
   enumerateCameras();
+  checkWindowsFolderUI();
+
+  // Also listen for destination select change
+  if (destinationSelect) {
+    destinationSelect.addEventListener('change', () => {
+      if (destinationSelect.value === 'windows' && isWindows) {
+        checkWindowsFolderUI();
+      } else if (windowsFolderSetupWrap) {
+        windowsFolderSetupWrap.style.display = 'none';
+      }
+    });
+  }
 
 })();
