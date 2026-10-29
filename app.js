@@ -443,7 +443,10 @@
     const platform = navigator.platform || '';
     let savedDestination = '';
     try { savedDestination = localStorage.getItem('securityCamDestination') || ''; } catch (err) {}
-    destinationExplicitlyChosen = Boolean(savedDestination);
+    // A destination picked in an earlier session must not suppress the local
+    // PC auto-save default when this session detects the PC server. A new
+    // selection in the current session still takes precedence.
+    destinationExplicitlyChosen = false;
 
     isIOS = /iPad|iPhone|iPod/.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     isWindows = /Win/.test(platform) || /Windows/.test(ua);
