@@ -58,13 +58,110 @@
   const linkAbyssFolderBtn = document.getElementById('linkAbyssFolderBtn');
   const windowsFolderStatusText = document.getElementById('windowsFolderStatusText');
 
-  // --- IndexedDB for Persistent Folder Handle Access ---
+  // iOS Install & Toast Elements
+  const iosInstallStrip = document.getElementById('iosInstallStrip');
+  const showInstallGuideBtn = document.getElementById('showInstallGuideBtn');
+  const installGuideModal = document.getElementById('installGuideModal');
+  const closeInstallGuideBtn = document.getElementById('closeInstallGuideBtn');
+  const dismissGuideOkBtn = document.getElementById('dismissGuideOkBtn');
+
+  const captureToast = document.getElementById('captureToast');
+  const toastTitle = document.getElementById('toastTitle');
+  const toastSubtitle = document.getElementById('toastSubtitle');
+  const toastActionBtn = document.getElementById('toastActionBtn');
+  const toastCloseBtn = document.getElementById('toastCloseBtn');
+  let toastTimer = null;
+
+  // --- IndexedDB for Persistent Folder Handle & Captured Videos ---
   function getDB() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('SecurityCamDB', 1);
-      req.onupgradeneeded = () => req.result.createObjectStore('handles');
+      const req = indexedDB.open('SecurityCamDB', 2);
+      req.onupgradeneeded = (e) => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('handles')) db.createObjectStore('handles');
+        if (!db.objectStoreNames.contains('captures')) db.createObjectStore('captures', { keyPath: 'filename' });
+      };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function saveCaptureToDB(record) {
+    try {
+      const db = await getDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction('captures', 'readwrite');
+        tx.objectStore('captures').put(record);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch (e) {
+      console.warn('IndexedDB save failed:', e);
+    }
+  }
+
+  async function loadAllCapturesFromDB() {
+    try {
+      const db = await getDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction('captures', 'readonly');
+        const req = tx.objectStore('captures').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+      });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function deleteCaptureFromDB(filename) {
+    try {
+      const db = await getDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction('captures', 'readwrite');
+        tx.objectStore('captures').delete(filename);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch (e) {}
+  }
+
+  function showCaptureToast(blob, filename) {
+    if (!captureToast) return;
+    toastTitle.textContent = 'Capture Complete!';
+    toastSubtitle.textContent = `${(blob.size / 1024 / 1024).toFixed(1)} MB • Saved in App`;
+
+    toastActionBtn.onclick = () => {
+      triggerIOSShare(blob, filename);
+      captureToast.classList.remove('show');
+    };
+
+    captureToast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      captureToast.classList.remove('show');
+    }, 7000);
+  }
+
+  if (toastCloseBtn && captureToast) {
+    toastCloseBtn.addEventListener('click', () => {
+      captureToast.classList.remove('show');
+    });
+  }
+
+  if (showInstallGuideBtn && installGuideModal) {
+    showInstallGuideBtn.addEventListener('click', () => {
+      installGuideModal.classList.add('open');
+    });
+  }
+  if (closeInstallGuideBtn && installGuideModal) {
+    closeInstallGuideBtn.addEventListener('click', () => {
+      installGuideModal.classList.remove('open');
+    });
+  }
+  if (dismissGuideOkBtn && installGuideModal) {
+    dismissGuideOkBtn.addEventListener('click', () => {
+      installGuideModal.classList.remove('open');
     });
   }
 
@@ -223,9 +320,19 @@
     isIOS = /iPad|iPhone|iPod/.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     isWindows = /Win/.test(platform) || /Windows/.test(ua);
 
+    const isStandalone = ('standalone' in window.navigator && window.navigator.standalone) ||
+                         window.matchMedia('(display-mode: standalone)').matches;
+
     if (isIOS) {
-      platformBadge.className = 'pill-badge active';
-      platformText.textContent = 'Apple iOS (iPhone)';
+      if (isStandalone) {
+        platformBadge.className = 'pill-badge active';
+        platformText.textContent = 'iPhone (App Mode)';
+        if (iosInstallStrip) iosInstallStrip.classList.add('hidden');
+      } else {
+        platformBadge.className = 'pill-badge';
+        platformText.textContent = 'iPhone (Safari)';
+        if (iosInstallStrip) iosInstallStrip.classList.remove('hidden');
+      }
       destinationSelect.value = 'cameraroll';
       storageRouteBadge.textContent = 'Default: Camera Roll';
     } else if (isWindows) {
@@ -791,11 +898,39 @@
     startBufferCycle();
   }
 
+  // Trigger native share on iOS from direct user interaction
+  async function triggerIOSShare(blob, filename) {
+    const file = new File([blob], filename, { type: 'video/mp4' });
+    const isOneDrive = destinationSelect.value === 'onedrive';
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        appendLog(`[iOS] Opening iOS Share Sheet for: ${filename}`);
+        await navigator.share({
+          title: filename,
+          text: isOneDrive ? 'Save security capture to OneDrive' : 'Save security capture to Camera Roll',
+          files: [file]
+        });
+        appendLog(`[SUCCESS] Saved/Shared ${filename} via iOS Share Sheet`);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.warn('Share error:', err);
+          appendLog(`Share sheet dismissed or error: ${err.message}`, 'WARN');
+        }
+      }
+    } else {
+      triggerBrowserDownload(blob, filename);
+    }
+  }
+
   // --- 8. File Storage Routing (Windows vs iPhone) ---
   async function routeAndSaveCapture(blob, filename) {
     const dest = destinationSelect.value;
     totalCapturesCount++;
     captureCountLabel.textContent = totalCapturesCount;
+
+    // Always add to persistent in-app gallery & IndexedDB
+    await addCaptureToGallery(blob, filename, true);
 
     // 1. Windows C:\Abyss\PWA_Captures (Local Server or File System Access API)
     if (dest === 'windows' || isLocalServerAvailable) {
@@ -835,53 +970,12 @@
       return;
     }
 
-    // 2. iPhone Camera Roll (Default on iOS)
-    if (dest === 'cameraroll') {
-      const file = new File([blob], filename, { type: 'video/mp4' });
-
-      // iOS Web Share API allows saving directly to Camera Roll
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          appendLog(`[iOS] Opening iOS Share Sheet for Camera Roll save...`);
-          await navigator.share({
-            title: filename,
-            text: 'Save Security Capture to Camera Roll',
-            files: [file]
-          });
-          appendLog(`[SUCCESS] User shared/saved ${filename} to Camera Roll`);
-          return;
-        } catch (err) {
-          if (err.name !== 'AbortError') {
-            appendLog(`Share error: ${err.message}`, 'WARN');
-          }
-        }
-      }
-
-      // Fallback
-      triggerBrowserDownload(blob, filename);
+    // 2. iPhone (Camera Roll or OneDrive)
+    if (isIOS || dest === 'cameraroll' || dest === 'onedrive') {
+      appendLog(`[iOS] Saved automatically into persistent app database: ${filename} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
+      // Show floating notification toast with direct tap action (no browser download popup!)
+      showCaptureToast(blob, filename);
       return;
-    }
-
-    // 3. iPhone OneDrive / Files App
-    if (dest === 'onedrive') {
-      const file = new File([blob], filename, { type: 'video/mp4' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          appendLog(`[OneDrive] Opening iOS Share Sheet to save to OneDrive / Files...`);
-          await navigator.share({
-            title: filename,
-            text: 'Select OneDrive folder to save capture',
-            files: [file]
-          });
-          appendLog(`[SUCCESS] Exported ${filename} to OneDrive/Files destination`);
-          return;
-        } catch (err) {
-          if (err.name !== 'AbortError') {
-            appendLog(`OneDrive share error: ${err.message}`, 'WARN');
-          }
-        }
-      }
-      triggerBrowserDownload(blob, filename);
     }
   }
 
@@ -898,7 +992,16 @@
     }, 1000);
   }
 
-  function addCaptureToGallery(blob, filename) {
+  async function addCaptureToGallery(blob, filename, shouldSaveToDB = true) {
+    if (shouldSaveToDB) {
+      await saveCaptureToDB({
+        filename,
+        blob,
+        size: blob.size,
+        date: new Date().toISOString()
+      });
+    }
+
     // Clear placeholder message
     if (capturesList.children[0] && capturesList.children[0].textContent.includes('No security events')) {
       capturesList.innerHTML = '';
@@ -906,6 +1009,7 @@
 
     const item = document.createElement('div');
     item.className = 'capture-item';
+    item.dataset.filename = filename;
 
     const info = document.createElement('div');
     info.className = 'capture-info';
@@ -924,11 +1028,11 @@
     const actions = document.createElement('div');
     actions.className = 'capture-actions';
 
-    const shareBtn = document.createElement('button');
-    shareBtn.className = 'btn-small-share';
-    shareBtn.innerHTML = isIOS ? '📲 Camera Roll' : '💾 Save';
-    shareBtn.onclick = () => {
-      routeAndSaveCapture(blob, filename);
+    const saveShareBtn = document.createElement('button');
+    saveShareBtn.className = 'btn-small-share';
+    saveShareBtn.innerHTML = destinationSelect.value === 'onedrive' ? '☁️ OneDrive' : '📲 Camera Roll';
+    saveShareBtn.onclick = () => {
+      triggerIOSShare(blob, filename);
     };
 
     const playBtn = document.createElement('a');
@@ -939,13 +1043,43 @@
     playBtn.href = URL.createObjectURL(blob);
     playBtn.target = '_blank';
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn-small-share';
+    deleteBtn.style.background = 'rgba(244,63,94,0.15)';
+    deleteBtn.style.color = '#fda4af';
+    deleteBtn.style.border = '1px solid rgba(244,63,94,0.3)';
+    deleteBtn.textContent = '🗑️';
+    deleteBtn.title = 'Delete capture';
+    deleteBtn.onclick = async () => {
+      if (confirm(`Delete ${filename}?`)) {
+        await deleteCaptureFromDB(filename);
+        item.remove();
+        if (capturesList.children.length === 0) {
+          capturesList.innerHTML = `<div style="font-size:0.75rem; color:var(--text-dim); text-align:center; padding: 12px;">No security events captured yet.</div>`;
+        }
+      }
+    };
+
     actions.appendChild(playBtn);
-    actions.appendChild(shareBtn);
+    actions.appendChild(saveShareBtn);
+    actions.appendChild(deleteBtn);
 
     item.appendChild(info);
     item.appendChild(actions);
 
     capturesList.prepend(item);
+  }
+
+  async function initSavedCaptures() {
+    const saved = await loadAllCapturesFromDB();
+    if (saved && saved.length > 0) {
+      saved.sort((a, b) => new Date(b.date) - new Date(a.date));
+      saved.forEach(item => {
+        addCaptureToGallery(item.blob, item.filename, false);
+      });
+      totalCapturesCount = saved.length;
+      captureCountLabel.textContent = totalCapturesCount;
+    }
   }
 
   // --- 9. Start / Stop Monitoring Handler ---
@@ -1084,6 +1218,7 @@
   // Initial load
   enumerateCameras();
   checkWindowsFolderUI();
+  initSavedCaptures();
 
   // Also listen for destination select change
   if (destinationSelect) {
