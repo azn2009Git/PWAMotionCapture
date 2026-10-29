@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Security Motion Capture PWA</title>
+
+  <!-- iOS Safari PWA Meta Tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SecurityCam">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
+
+  <!-- Web App Manifest -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0a0e17">
+
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="ambient-glow"></div>
+
+  <div class="app-wrapper">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-title-group">
+        <img src="icons/icon-180.png" alt="Security Cam Icon" class="header-icon">
+        <div class="header-text">
+          <h1>Security Motion Capture</h1>
+          <p>Audio &amp; Video Pre-Roll Monitor</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span id="platformBadge" class="pill-badge">
+          <span class="pill-dot"></span><span id="platformText">Detecting OS...</span>
+        </span>
+        <span id="systemStateBadge" class="pill-badge">
+          <span class="pill-dot"></span><span id="systemStateText">Standby</span>
+        </span>
+      </div>
+    </header>
+
+    <!-- 1. TOP FRAME: What the camera is showing -->
+    <section class="top-camera-frame" id="cameraFrameContainer">
+      <video id="cameraViewfinder" playsinline autoplay muted></video>
+
+      <!-- Top HUD Overlay -->
+      <div class="hud-overlay-top">
+        <div id="hudStatusBanner" class="hud-status-banner">
+          <span id="hudStatusDot" style="color:#10b981;">●</span>
+          <span id="hudStatusText">CAMERA READY</span>
+        </div>
+        <div id="hudClock" class="hud-clock">00:00:00</div>
+      </div>
+
+      <!-- Bottom HUD Overlay: Motion Meter -->
+      <div class="hud-overlay-bottom">
+        <div class="motion-meter-row">
+          <span>MOTION ACTIVITY: <strong id="motionPercentVal">0%</strong></span>
+          <span>TRIGGER: <strong id="motionThresholdVal">15%</strong></span>
+        </div>
+        <div class="meter-track">
+          <div id="meterFill" class="meter-fill"></div>
+          <div id="meterThresholdLine" class="meter-threshold-line" style="left: 15%;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Hidden Offscreen Canvas for Real-Time Motion Differencing -->
+    <canvas id="motionDiffCanvas" width="160" height="120" style="display:none;"></canvas>
+
+    <!-- 2. Device Controls & Storage Card -->
+    <section class="card">
+      <div class="card-title">
+        <span>⚙️ Device &amp; Storage Configuration</span>
+        <span id="storageRouteBadge" style="font-size:0.7rem; color:var(--accent-cyan); font-weight:normal;">Auto-Routed</span>
+      </div>
+
+      <div class="settings-grid">
+        <!-- Camera Selector -->
+        <div class="form-group">
+          <label for="cameraSelect"><span>📷</span> Camera Input:</label>
+          <select id="cameraSelect" class="form-select">
+            <option value="">Detecting cameras...</option>
+          </select>
+        </div>
+
+        <!-- Destination Selector (iPhone: Camera Roll vs OneDrive; Windows: C:\Abyss) -->
+        <div class="form-group">
+          <label for="destinationSelect"><span>💾</span> Save Destination:</label>
+          <select id="destinationSelect" class="form-select">
+            <option value="cameraroll">iPhone: Camera Roll (Photos App)</option>
+            <option value="onedrive">iPhone: OneDrive / Files App</option>
+            <option value="windows">Windows: C:\Abyss\PWA_Captures</option>
+          </select>
+        </div>
+
+        <!-- Motion Sensitivity Slider -->
+        <div class="form-group">
+          <label for="sensitivityRange">
+            <span>🎯</span> Sensitivity:
+            <span id="sensitivityLabel" style="color:var(--accent-cyan); font-weight:bold;">Normal</span>
+          </label>
+          <div class="range-wrap">
+            <input type="range" id="sensitivityRange" class="form-range" min="3" max="40" value="15" step="1">
+            <span id="sensitivityNum" class="range-val">15%</span>
+          </div>
+        </div>
+
+        <!-- Audio Microphone Info -->
+        <div class="form-group">
+          <label><span>🎙️</span> Audio Channel:</label>
+          <div class="status-strip" style="padding: 7px 10px;">
+            <span>Mic Stream:</span>
+            <span id="micStatusText" class="status-strip-val">Armed (AAC Audio)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Primary Actions -->
+    <section class="action-buttons-group">
+      <!-- Big Start/Stop Monitoring Button -->
+      <button id="toggleMonitorBtn" class="btn-main-monitor">
+        <span id="monitorBtnIcon">▶️</span>
+        <span id="monitorBtnText">Start Monitoring</span>
+      </button>
+
+      <div class="btn-sub-group">
+        <button id="viewLogBtn" class="btn-secondary">
+          <span>📋</span> View / Copy Debug Log
+        </button>
+        <button id="closeAppBtn" class="btn-secondary btn-close-app">
+          <span>🚪</span> Close App
+        </button>
+      </div>
+    </section>
+
+    <!-- 4. Session Status Strip -->
+    <section class="status-strip">
+      <div>Active Log: <span id="activeLogLabel" class="status-strip-val">None (Start to initialize)</span></div>
+      <div>Captures: <span id="captureCountLabel" class="status-strip-val">0</span></div>
+    </section>
+
+    <!-- 5. Captures Gallery / Review -->
+    <section class="card">
+      <div class="card-title">
+        <span>🎬 Recorded Captures (5s Pre-Roll + Motion + 5s Post)</span>
+      </div>
+      <div id="capturesList" class="captures-list">
+        <div style="font-size:0.75rem; color:var(--text-dim); text-align:center; padding: 12px;">
+          No security events captured yet. When motion is detected, recorded clips will appear here.
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Debug Log Modal -->
+  <div id="logModal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>📋 Session Debug Log</h3>
+        <button id="closeLogModalBtn" class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <textarea id="logContentArea" class="log-textarea" readonly></textarea>
+      </div>
+      <div class="modal-footer">
+        <button id="downloadLogFileBtn" class="btn-secondary">
+          <span>💾</span> Download Log File
+        </button>
+        <button id="copyLogBtn" class="btn-secondary" style="background:var(--accent-cyan); color:#000; font-weight:700;">
+          <span>📄</span> Copy Log to Clipboard
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Closed Overlay -->
+  <div id="appClosedOverlay" class="app-closed-overlay hidden">
+    <h2 style="color:var(--accent-rose);">App Closed</h2>
+    <p style="color:var(--text-muted); max-width:380px;">
+      Camera and audio streams have been safely shut down. You may close this tab or window.
+    </p>
+    <button id="reopenAppBtn" class="btn-secondary" style="margin-top:10px;">
+      ↺ Resume / Re-open Security Camera
+    </button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
