@@ -19,7 +19,7 @@ The local HTTPS server creates `C:\Abyss\PWA_Captures` and `C:\Abyss\PWALogs` an
 
 ### Automatic iPhone-to-PC saving
 
-For automatic saves with no per-video tap, run the local HTTPS server on the Windows PC and open/install the PWA from the HTTPS address it prints. Keep the PC server running and the iPhone on the same Wi-Fi. The app detects the server, selects **Home PC: Auto-save to C:\Abyss\PWA_Captures**, and posts each finished clip to that PC. If the PC is offline, clips stay in the app's IndexedDB gallery and are retried automatically when the server is reachable again. The **PC Sync** status shows how many clips are waiting. Session logs go to the PC when it is reachable; otherwise use the debug log panel to copy or download them. The video files are already on the laptop and can be copied to another computer or USB drive from that folder.
+For automatic saves with no per-video tap, run the local HTTPS server on the Windows PC and open/install the PWA from the HTTPS address it prints. Keep the PC server running and the iPhone on the same Wi-Fi. The app detects the server, selects **Home PC: Auto-save to C:\Abyss\PWA_Captures**, and posts each finished clip to that PC. If the PC is offline, clips stay in the app's IndexedDB gallery and are retried automatically when the server is reachable again. Each completed monitoring session's debug log is also queued in IndexedDB and automatically synced to `C:\Abyss\PWALogs` when the PC is reachable, including when the selected video destination is another option. The **PC Sync** status shows any captures and logs waiting. The video and log files are already on the laptop and can be copied to another computer or USB drive.
 
 ### iPhone
 
@@ -27,7 +27,7 @@ When the PWA is served by the local PC server, it can automatically send capture
 
 The camera chooser offers explicit **Rear Camera** and **Front Camera** options on iPhone and Android. The app requests the selected facing mode directly, rather than depending on iOS to expose both cameras as separate device IDs.
 
-Use **View / Copy Debug Log** to copy the current or most recent session log. On Windows, the local server writes each session log to `C:\Abyss\PWALogs`.
+Use **View / Copy Debug Log** to copy the current or most recent session log. On Windows, the local server writes each session log to `C:\Abyss\PWALogs`. Offline iPhone session logs remain queued in IndexedDB until the Home PC server reconnects.
 
 ## Run locally over HTTPS
 

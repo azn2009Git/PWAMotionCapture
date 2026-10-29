@@ -57,6 +57,8 @@
   let isSyncingPendingCaptures = false;
   let isCheckingLocalServer = false;
   let pendingPcCaptureCount = 0;
+  let pendingPcLogCount = 0;
+  let isSyncingPendingLogs = false;
   let abyssDirHandle = null;
   let totalCapturesCount = 0;
 
@@ -82,11 +84,12 @@
   // --- IndexedDB for Persistent Folder Handle & Captured Videos ---
   function getDB() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('SecurityCamDB', 2);
+      const req = indexedDB.open('SecurityCamDB', 3);
       req.onupgradeneeded = (e) => {
         const db = req.result;
         if (!db.objectStoreNames.contains('handles')) db.createObjectStore('handles');
         if (!db.objectStoreNames.contains('captures')) db.createObjectStore('captures', { keyPath: 'filename' });
+        if (!db.objectStoreNames.contains('logs')) db.createObjectStore('logs', { keyPath: 'filename' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -128,6 +131,57 @@
     return saved.filter(item => item.pcSynced === false);
   }
 
+  async function saveLogToDB(record) {
+    try {
+      const db = await getDB();
+      return await new Promise((resolve) => {
+        const tx = db.transaction('logs', 'readwrite');
+        tx.objectStore('logs').put(record);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+        tx.onabort = () => resolve(false);
+      });
+    } catch (err) {
+      console.warn('[Log] IndexedDB save failed:', err);
+      return false;
+    }
+  }
+
+  async function getPendingPcLogs() {
+    try {
+      const db = await getDB();
+      return await new Promise((resolve) => {
+        const tx = db.transaction('logs', 'readonly');
+        const req = tx.objectStore('logs').getAll();
+        req.onsuccess = () => resolve((req.result || []).filter(item => item.pcSynced === false));
+        req.onerror = () => resolve([]);
+      });
+    } catch (err) {
+      return [];
+    }
+  }
+
+  async function setLogPcSynced(filename) {
+    try {
+      const db = await getDB();
+      return await new Promise((resolve) => {
+        const tx = db.transaction('logs', 'readwrite');
+        const store = tx.objectStore('logs');
+        const req = store.get(filename);
+        req.onsuccess = () => {
+          if (req.result) {
+            req.result.pcSynced = true;
+            store.put(req.result);
+          }
+        };
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
+    } catch (err) {
+      return false;
+    }
+  }
+
   async function setCapturePcSynced(filename) {
     try {
       const db = await getDB();
@@ -152,13 +206,18 @@
   async function updatePendingPcSyncStatus() {
     if (!pendingPcSyncLabel) return;
     const pending = await getPendingPcCaptures();
+    const pendingLogs = await getPendingPcLogs();
     pendingPcCaptureCount = pending.length;
-    if (destinationSelect.value !== 'pcserver' && !pending.length) {
+    pendingPcLogCount = pendingLogs.length;
+    if (destinationSelect.value !== 'pcserver' && !pending.length && !pendingLogs.length) {
       pendingPcSyncLabel.textContent = 'Not selected';
       return;
     }
-    pendingPcSyncLabel.textContent = pending.length
-      ? `${pending.length} waiting for PC`
+    const pendingParts = [];
+    if (pending.length) pendingParts.push(`${pending.length} capture${pending.length === 1 ? '' : 's'}`);
+    if (pendingLogs.length) pendingParts.push(`${pendingLogs.length} log${pendingLogs.length === 1 ? '' : 's'}`);
+    pendingPcSyncLabel.textContent = pendingParts.length
+      ? `${pendingParts.join(', ')} waiting for PC`
       : destinationSelect.value === 'pcserver'
         ? isLocalServerAvailable ? 'Up to date' : 'Waiting for PC'
         : 'Not selected';
@@ -169,6 +228,17 @@
       method: 'POST',
       headers: { 'X-Filename': filename, 'Content-Type': blob.type || 'application/octet-stream' },
       body: blob
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) throw new Error(result.error || `HTTP ${response.status}`);
+    return result;
+  }
+
+  async function uploadLogTextToPc(filename, logText) {
+    const response = await fetch('/api/save_log', {
+      method: 'POST',
+      headers: { 'X-Filename': filename, 'Content-Type': 'text/plain; charset=utf-8' },
+      body: logText
     });
     const result = await response.json();
     if (!response.ok || !result.success) throw new Error(result.error || `HTTP ${response.status}`);
@@ -200,6 +270,27 @@
     }
   }
 
+  async function syncPendingLogsToPc() {
+    if (isSyncingPendingLogs || !isLocalServerAvailable) return;
+    isSyncingPendingLogs = true;
+    try {
+      const pendingLogs = await getPendingPcLogs();
+      for (const item of pendingLogs) {
+        try {
+          const result = await uploadLogTextToPc(item.filename, item.text);
+          await setLogPcSynced(item.filename);
+          console.log(`[Log] Synced debug log to Home PC: ${result.path}`);
+        } catch (err) {
+          console.warn(`[Log] Home PC log sync is waiting for ${item.filename}:`, err);
+          break;
+        }
+      }
+    } finally {
+      isSyncingPendingLogs = false;
+      await updatePendingPcSyncStatus();
+    }
+  }
+
   async function refreshLocalServerStatus() {
     if (isCheckingLocalServer) return;
     isCheckingLocalServer = true;
@@ -224,6 +315,7 @@
         if (windowsFolderSetupWrap) windowsFolderSetupWrap.style.display = 'none';
       }
       await syncPendingCapturesToPc();
+      await syncPendingLogsToPc();
     } catch (err) {
       isLocalServerAvailable = false;
       await updatePendingPcSyncStatus();
@@ -502,7 +594,7 @@
   detectPlatform();
   window.addEventListener('online', refreshLocalServerStatus);
   setInterval(() => {
-    if (destinationSelect.value === 'pcserver' || pendingPcCaptureCount > 0) refreshLocalServerStatus();
+    if (destinationSelect.value === 'pcserver' || pendingPcCaptureCount > 0 || pendingPcLogCount > 0) refreshLocalServerStatus();
   }, 30000);
 
   // Update clock every second
@@ -561,6 +653,7 @@
     appendLog(`Screen: ${window.screen.width}x${window.screen.height} | PixelRatio: ${window.devicePixelRatio}`);
     appendLog(`Selected Camera: ${selectedDeviceId || 'Default'} | Label: ${cameraSelect.options[cameraSelect.selectedIndex]?.text || 'N/A'}`);
     appendLog(`Selected Save Destination: ${destinationSelect.value}`);
+    appendLog(`App Revision: ${document.querySelector('.app-footer')?.textContent || 'Unknown'}`);
     appendLog(`Motion Trigger Sensitivity: ${motionThreshold}%`);
     appendLog(`Local Server Abyss API: ${isLocalServerAvailable ? 'Active' : 'Offline / Remote'}`);
   }
@@ -572,31 +665,28 @@
     logSessionActive = false;
 
     const logText = currentLogEntries.join('\n');
+    const logRecord = { filename: currentLogFilename, text: logText, pcSynced: false, createdAt: Date.now() };
+    const persisted = await saveLogToDB(logRecord);
+    if (!persisted) console.warn(`[Log] Could not queue ${currentLogFilename} in IndexedDB.`);
 
-    // 1. If local Python server is running on Windows, save directly to C:\Abyss\PWALogs
-    if ((isWindows || destinationSelect.value === 'pcserver') && isLocalServerAvailable) {
+    if (!persisted && isLocalServerAvailable) {
       try {
-        const res = await fetch('/api/save_log', {
-          method: 'POST',
-          headers: { 'X-Filename': currentLogFilename, 'Content-Type': 'text/plain' },
-          body: logText
-        });
-        const data = await res.json();
-        if (data.success) {
-          console.log(`[Log] Saved debug log directly to: ${data.path}`);
-          return;
-        }
+        const result = await uploadLogTextToPc(currentLogFilename, logText);
+        console.log(`[Log] Saved debug log directly to Home PC: ${result.path}`);
+        return;
       } catch (err) {
-        console.warn('[Log] Failed to auto-save log via local server API:', err);
+        console.warn('[Log] Direct Home PC log save failed:', err);
       }
     }
 
-    // 2. If user linked C:\Abyss folder, save directly to C:\Abyss\PWALogs
+    // If the user linked C:\Abyss directly, write the log there immediately.
     if (abyssDirHandle) {
       try {
         const ok = await saveToAbyssFolder(abyssDirHandle, 'PWALogs', currentLogFilename, logText);
         if (ok) {
+          await setLogPcSynced(currentLogFilename);
           console.log(`[Log] Saved debug log directly to C:\\Abyss\\PWALogs\\${currentLogFilename}`);
+          await updatePendingPcSyncStatus();
           return;
         }
       } catch (fsErr) {
@@ -604,8 +694,14 @@
       }
     }
 
-    // 3. Fallback on Windows: trigger auto-download of the log file so it is never lost
-    if (isWindows) {
+    // Keep offline logs queued and deliver them with pending captures once the
+    // Home PC server becomes reachable, even if another capture destination is selected.
+    if (isLocalServerAvailable) await syncPendingLogsToPc();
+    await updatePendingPcSyncStatus();
+
+    // Keep a Windows-browser download as a fallback if no server copy exists.
+    const stillPending = (await getPendingPcLogs()).some(item => item.filename === currentLogFilename);
+    if (isWindows && stillPending) {
       const logBlob = new Blob([logText], { type: 'text/plain' });
       triggerBrowserDownload(logBlob, currentLogFilename);
       console.log(`[Log] Log file downloaded: ${currentLogFilename}`);
@@ -704,11 +800,10 @@
     try {
       const mediaConstraints = {
         video: videoConstraints,
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: true
-        }
+        // Let iOS/Safari select its native microphone processing defaults.
+        // Explicitly disabling echo cancellation/noise suppression has caused
+        // inconsistent microphone capture on some mobile browser versions.
+        audio: true
       };
       try {
         currentCameraStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
@@ -730,11 +825,21 @@
         cameraViewfinder.classList.remove('mirrored');
       }
 
-      // Check audio track
+      // Keep microphone state visible and in the debug log. The preview video
+      // element is muted for autoplay; this does not mute the MediaStream.
       const audioTrack = currentCameraStream.getAudioTracks()[0];
-      if (audioTrack && audioTrack.enabled) {
-        micStatusText.textContent = `Active (${audioTrack.label || 'Mic Stream'})`;
+      if (audioTrack) {
+        audioTrack.enabled = true;
+        micStatusText.textContent = `Active (${audioTrack.label || 'Microphone'})`;
         micStatusText.style.color = 'var(--accent-emerald)';
+        appendLog(`[Audio] Microphone acquired: label=${audioTrack.label || '(hidden)'}, enabled=${audioTrack.enabled}, muted=${audioTrack.muted}, state=${audioTrack.readyState}`);
+        audioTrack.addEventListener('mute', () => appendLog('[Audio] Microphone track muted by browser/device.', 'WARN'));
+        audioTrack.addEventListener('unmute', () => appendLog('[Audio] Microphone track resumed.'));
+        audioTrack.addEventListener('ended', () => appendLog('[Audio] Microphone track ended.', 'ERROR'));
+      } else {
+        micStatusText.textContent = 'Unavailable';
+        micStatusText.style.color = 'var(--accent-rose)';
+        appendLog('[Audio] No microphone track was returned by getUserMedia.', 'ERROR');
       }
 
       // Once permission is granted, browsers reveal camera names such as
@@ -888,7 +993,13 @@
     const mimeType = getSupportedMimeType();
     const options = mimeType ? { mimeType } : {};
     try {
+      const audioTracks = currentCameraStream?.getAudioTracks() || [];
+      if (!audioTracks.length || audioTracks.every(track => track.readyState !== 'live' || !track.enabled)) {
+        appendLog('[Audio] Cannot start recorder: no enabled, live microphone track is present.', 'ERROR');
+        return null;
+      }
       const rec = new MediaRecorder(currentCameraStream, options);
+      appendLog(`[Recorder] Created ${rec.mimeType || mimeType || '(browser default)'} with ${currentCameraStream.getVideoTracks().length} video and ${audioTracks.length} audio track(s).`);
       return rec;
     } catch (err) {
       appendLog(`Failed to create MediaRecorder: ${err.message}`, 'ERROR');
@@ -1430,6 +1541,12 @@
       }
       if (!currentCameraStream) await startCameraStream(selectedDeviceId);
       if (!currentCameraStream) throw new Error('The camera could not be started.');
+      const liveAudioTrack = currentCameraStream.getAudioTracks().find(track => track.readyState === 'live' && track.enabled);
+      if (!liveAudioTrack) {
+        micStatusText.textContent = 'Unavailable';
+        micStatusText.style.color = 'var(--accent-rose)';
+        throw new Error('No active microphone track is available. Allow microphone access for this site, then reload and try again.');
+      }
     } catch (err) {
       appendLog(`Monitoring could not start: ${err.message}`, 'ERROR');
       await finalizeAndSaveLog();
